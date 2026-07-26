@@ -66,10 +66,21 @@
 
 ## 🔴 铁律四：契约同步
 
-服务端接口以客户端仓库的 **`docs/api-contract.md`** 为准。
+服务端接口以 **`magirecocn-architecture-protocol-document`**（架构协议文档仓库）
+为唯一真理。
 
-**改动任一侧都必须同步另一侧**：先在契约文档登记变更与影响面，再改实现。
+> 早期注释写着"字段名以 `magireco-cnv-client` 的 Java 源码为唯一真理"。
+> **该锚点已失效**——Android 客户端已弃维，不再有"照着实现"的对象。
+
+**改动任一侧都必须同步另一侧**：先在协议文档登记变更与影响面，再改实现。
 服务端**不得**单方面变更线格式——客户端已发布到玩家浏览器，旧版本会持续在跑。
+
+文档中每项带状态标记：**✅ 已定 / 📝 草案 / 🚧 保留**。
+🚧 **保留 = 明令未定，禁止自行发挥**；遇到它挡路时，去把那一项定掉，
+不要在实现里"先随便定一个"。
+
+本仓库自己的文档站（`docs/`，VitePress）是**派生物**，不是真理来源；
+但它必须与实现保持一致——见下方「代码 → 文档对照表」。
 
 契约中已定且**极易实现错**的两处，务必留意：
 
@@ -77,6 +88,43 @@
    签名之后再格式化 JSON，验签必然失败。
 2. **资产未命中必须返回 404**，不要返回 `200` + 错误页——客户端会把它当作资产内容
    缓存下来。
+
+## 🔴 铁律五：代码与文档同步提交
+
+**任何改变协议、行为、部署或安全机制的改动，必须在同一个 commit 里更新对应文档。**
+不允许"先合代码、文档以后补"——滞后的文档会误导读者，比没有文档更糟。
+
+判据：**如果你的改动会让某篇现有文档的描述变得不准确或不完整，就必须在本次改动里
+把那篇文档一起改掉。**
+
+### 代码 → 文档对照表
+
+| 改了哪里（代码） | 必须同步检查/更新的文档 |
+|---|---|
+| `internal/api/client`（`/client/*` 线格式、端点增删） | `docs/architecture/client-protocol.md`、**以及协议文档仓库** |
+| 协议版本协商 / `supportedProtocolVersions` | `docs/security/version-gates.md` |
+| 请求中间件链、鉴权顺序 | `docs/architecture/request-lifecycle.md` |
+| `internal/directory`（签名节点目录） | `docs/architecture/multi-node.md`、协议文档仓库 `spec/03` |
+| `internal/store`（表结构、迁移、方言） | `docs/architecture/data-model.md`、`docs/contributing/store-dialects.md` |
+| `internal/auth`、`internal/middleware`（会话/限流/代理信任） | `docs/security/*` 对应篇 |
+| `internal/capworker`（PoW） | `docs/security/captcha-pow.md` |
+| `internal/scheduler`、`internal/packer` | `docs/contributing/scheduler.md`、`packer.md` |
+| `internal/api/admin`、`web/pages/*` | `docs/self-host/admin-panel.md` |
+| 环境变量、`deploy/` | `docs/self-host/configuration.md`、`operations.md` |
+| `.github/workflows/` | `docs/contributing/release-ci.md`、下方「CI 触发规则」 |
+| 新增包 / 职责变化 | `docs/architecture/index.md`、`docs/contributing/codebase-tour.md` |
+
+改完文档用 `cd docs && npm run docs:build` 验证能构建（容器 `:::` 要配对、
+内部链接锚点要对）。
+
+> **自动兜底**：提交钩子 `.claude/hooks/doc-sync-check.py`（`PreToolUse`）会在
+> `git commit` 前拦下「改了代码却没改文档」的提交。确需跳过（纯重构 / 修 typo 等）
+> 时，在提交信息里加标记 `[skip-doc-check]`。
+> **只有这一道**——CI 侧的 `doc-binding.yml` 因只在 PR 上触发而实际不生效，
+> 见下方「CI 触发规则」。
+
+> **删能力时不要只删文档段落**：写明"已移除"及其替代。读者手上很可能是旧版本，
+> 需要知道东西去哪了。
 
 ## 外部仓库访问边界
 
@@ -97,9 +145,22 @@
 - **不要**把模型标识/型号写进 commit、PR、代码注释或任何入库产物（仅聊天可提）。
 - `git push` 用 `git push -u origin main`；网络失败按 2/4/8/16s 退避重试至多 4 次。
 
+## 技术栈
+
+- **Go**（`go.mod` 为准）+ **chi** 路由；无框架、无 ORM。
+- **一套代码三种数据库**：PostgreSQL / MySQL / SQLite 经 `internal/store` 的方言层
+  适配。业务 SQL 一律写 `?` 占位符，由方言层改写（PG 转 `$N`）；
+  **不要写某一种数据库专属的语法**。
+- **迁移内嵌、启动自动执行、幂等可重复运行**。
+- **无 Redis / 消息队列 / 前端构建链**。新功能优先用"进程内 + 数据库"，
+  别轻易引入外部依赖——这套东西要能被业余志愿者在一台小机器上跑起来。
+- 面板前端是免构建的 JSX（`web/`），改完刷新浏览器即生效。
+- 提交前：`gofmt -l .`（本次改动的文件不得出现）、`go build ./...`、
+  `go vet ./...`、`go test ./...` 全绿。
+- 文档站是 **VitePress**（`docs/`），中文；改完 `cd docs && npm run docs:build` 验证。
+
 ## 技术约束
 
-- **技术栈尚未选定**。选定后须在此登记，并同步补充构建、测试与部署约定。
 - **能力隔离**：边缘节点只承担 `resource` 能力，**不得**接收或校验登录／账号／存档
   凭证；主节点承担 `login`／`account`／`save`／`api`。节点目录中的 `caps` 声明必须
   与实际部署一致——声明了不具备的能力，等于把凭证引向错误的地方。
@@ -110,6 +171,21 @@
 
 ## CI 触发规则
 
-> 目前尚未建立 workflow。新增时须在此登记触发条件，并**务必**加入密钥扫描与资产
-> 扫描（与 `.claude/hooks/commit-guard.py` 同口径），作为提交钩子之外的第二道闸——
-> 钩子只在本地 Claude 会话内生效，直接 `git push` 是绕过的。
+三个 workflow 都带**仓库名白名单**（`MagirecoCN-Revival-Project/magireco-cnv-server`），
+fork 后不会自动跑。改仓库名时必须同步这个白名单，否则 CI 会自我禁用。
+
+| workflow | 触发 |
+|---|---|
+| `build.yml` | push main（`paths-ignore` 掉 `**.md` / `docs/` / `.github/` / `.claude/` / LICENSE）+ 手动 → 构建并发版 |
+| `pages.yml` | push main 且 `docs/**` 变更 + 手动 → 构建并部署文档站 |
+| `dependency-graph.yml` | push main 且 `go.mod` / `go.sum` 变更 + 每周一 + 手动 |
+| `doc-binding.yml` | **仅 `pull_request`** |
+
+> ⚠️ **`doc-binding.yml` 实际上永远不会跑**：它只在 `pull_request` 上触发，而本仓库
+> 直接提交 main、无 PR 流程。因此「代码 → 文档对照表」在 CI 侧**没有兜底**，
+> 只有提交钩子 `doc-sync-check.py` 一道防线，且钩子只在本地 Claude 会话内生效，
+> 直接 `git push` 是绕过的。改这条之前别把它当成安全网。
+
+新增 workflow 时须在此登记触发条件，并**务必**加入密钥扫描与资产扫描
+（与 `.claude/hooks/commit-guard.py` 同口径），作为提交钩子之外的第二道闸——
+钩子只在本地 Claude 会话内生效，直接 `git push` 是绕过的。
