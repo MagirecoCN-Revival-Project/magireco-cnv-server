@@ -1,7 +1,7 @@
 name: 📚 构建并部署文档站
 
 # ╔════════════════════════════════════════════════════════════════════╗
-# ║   magirecocn-resource-server  ——  VitePress 文档站构建与部署        ║
+# ║   magireco-cnv-server  ——  VitePress 文档站构建与部署                ║
 # ╠════════════════════════════════════════════════════════════════════╣
 # ║                                                                    ║
 # ║ 用途                                                                ║
@@ -56,7 +56,7 @@ jobs:
           python3 <<'SCRIPT_END'
           import os, sys
 
-          ALLOWED = {"MagirecoCN-Revival-Project/magirecocn-resource-server"}
+          ALLOWED = {"MagirecoCN-Revival-Project/magireco-cnv-server"}
           repo = os.environ.get("REPO", "")
 
           if repo not in ALLOWED:

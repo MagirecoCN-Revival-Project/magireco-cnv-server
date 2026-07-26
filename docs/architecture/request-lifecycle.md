@@ -60,10 +60,14 @@ sequenceDiagram
     participant ST as 存储层
     participant DB as 数据库
 
-    C->>MW: POST /client/init {version, device_id, signature, channel}
+    C->>MW: POST /client/init {device_id, protocol_versions, version, signature, channel}
     MW->>MW: Recovery/Logger/SecurityHeaders/BodyLimit
     MW->>H: 进入 handler
     H->>H: 校验 device_id 非空
+    H->>H: negotiateProtocol(取版本交集)
+    alt 与服务端支持集无交集
+        H-->>C: 400 protocol_version_unsupported
+    end
     H->>H: checkSignature(签名白名单)
     alt 签名不在白名单
         H->>ST: 记 integrity_rejected 审计
@@ -75,28 +79,27 @@ sequenceDiagram
     alt 设备被封
         H-->>C: 200 {banned:true, ban_reason}
     end
-    H->>ST: 读 config:server / features / versions
-    alt 版本不在 allowed_versions
-        H-->>C: 200 {force_update:true, update_url_*}
-    end
+    H->>ST: 读 config:server / features
     H->>ST: ClientSessionInsert(签发 access_token)
-    H-->>C: 200 {access_token, server, client, spoof, features, ...}
+    H-->>C: 200 {protocol_version, access_token, server_time_at,<br/>server, features, asset_auth, directory}
 ```
 
 注意几个**刻意的协议约定**:
 
-- **封禁、版本闸门都返回 HTTP 200**,把状态放在 body 的顶层 flag 里。因为客户端的 `Net.postJson` 对 HTTP ≥400 会抛 `IOException`,根本读不到 body —— 那样 update URL / ban reason 就传不出去。
-- 校验顺序是**先硬后软**:签名 → 渠道 → 封禁 → 版本闸门 → 才签发会话。任何硬闸门不过就提前返回,不签 token。
+- **协议版本协商排在最前面**,早于签名与封禁判定。双方连"用哪套线格式说话"都没谈拢时,后面的字段谁也不该解读。无交集时握手终止,**客户端不得降级**。
+- **封禁返回 HTTP 200**,把状态放在 body 的顶层 flag 里。封禁是正常的业务结果而非请求错误,客户端要读到 `ban_reason` 与 `expire_time` 才能提示玩家;用 4xx 会让"被封禁"和"请求写错了"在客户端看来是同一件事。
+- 校验顺序:协议版本 → 签名 → 渠道 → 封禁 → 才签发会话。任何一关不过就提前返回,不签 token。
+- **APK 版本闸门(`allowed_versions` / `force_update` / `update_url_*`)已移除**,`config.versions` 不再被 `/client/*` 读取。
 
 详见 [客户端握手协议](./client-protocol)。
 
 ## authTriple:握手后的请求如何鉴权
 
-`/client/init` 之后的端点(`online-download`、`heartbeat` 等)都要带 **authTriple**:
+`/client/init` 之后的端点(`heartbeat`、`scene-manifest`)都要带 **authTriple**:
 
 ```mermaid
 flowchart TB
-    REQ["POST /client/online-download<br/>{device_id, access_token, signature, ...}"]
+    REQ["POST /client/scene-manifest<br/>{device_id, access_token, signature, scene_id}"]
     REQ --> RW["readAndRewind<br/>(body 只能读一次,读出后塞回)"]
     RW --> WF{access_token<br/>格式合法?}
     WF -->|否| E1["401 missing_access_token"]
@@ -109,7 +112,9 @@ flowchart TB
     BAN -->|否| OK["注入 session 到 ctx<br/>→ 业务 handler"]
 ```
 
-关键深度防御:**后续请求的 signature 必须与握手时写入会话的那个一致**。Android APK 的签名证书在单次安装期不可能变;若变了,说明会话被劫持或客户端被换包,直接作废会话。
+关键深度防御:**后续请求的 signature 必须与握手时写入会话的那个一致**。会话存续期间它不该变;若变了,说明会话被劫持或客户端被换包,直接作废会话。
+
+> 这条对 Android 端强度最高(APK 签名证书在单次安装期不可能变)。Web 客户端整个跑在玩家浏览器里,**没有不可绕过的完整性凭据**——它在那里是一致性检查,不是安全边界。
 
 这里还有个工程细节:`http.Request.Body` 只能读一次,但中间件要读 body 取 authTriple、业务 handler 又要再读一次解析完整参数。解决办法是 `readAndRewind` 把 body 读进内存再塞回一个可重读的 reader。
 

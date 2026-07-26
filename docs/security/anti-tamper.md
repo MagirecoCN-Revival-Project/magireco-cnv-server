@@ -76,7 +76,7 @@ flowchart TB
 
 ## 深度防御:会话内签名一致性
 
-光在握手时查一次还不够。`/client/init` 之后的每个端点(`online-download`、`heartbeat` 等)都带 authTriple,其中也有 `signature`。中间件会复核:
+光在握手时查一次还不够。`/client/init` 之后的每个端点(`heartbeat`、`scene-manifest`)都带 authTriple,其中也有 `signature`。中间件会复核:
 
 ```mermaid
 sequenceDiagram
@@ -86,7 +86,7 @@ sequenceDiagram
     S->>S: 写入 client_sessions.signature = X
     S-->>C: access_token
     Note over C,S: ……后续请求……
-    C->>S: /client/online-download signature=Y(变了!)
+    C->>S: /client/scene-manifest signature=Y(变了!)
     S->>S: Y ≠ 会话里的 X
     S->>S: 记 changed_mid_session 审计 + 作废会话
     S-->>C: 403 signature_rejected

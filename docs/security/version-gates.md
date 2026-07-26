@@ -1,122 +1,105 @@
-# 版本闸门与软提示
+# 协议版本协商
 
-服务端通过三种机制控制客户端版本:两道**硬闸门**(强制更新)和一道**软提示**(可暂不更新)。本页讲清三者的语义、优先级与渠道策略。
+服务端只有**一种**版本机制:在握手时与客户端协商**协议版本**。
 
-## 三种机制对比
+::: danger 本页曾经写的是另一回事
+早期版本的本页描述的是 **APK 版本闸门**——`allowed_versions` 硬闸门、
+`latest_version` 软提示、`update_url_*` 下载地址、`update_apk_sha256` 安装前校验。
 
-| 机制 | 字段 | 行为 | 优先级 |
-|---|---|---|---|
-| 强制更新 | `force_update:true` + `update_url_*` | 版本被拒,必须更新或退出 | 高(握手中先判) |
-| 版本白名单 | `client.allowed_versions` | 当前版本不在列表 → 强制更新 | 高 |
-| **更新软提示** | `client.latest_version` | 按渠道提示,可"暂不更新"继续 | 低(软) |
+**那一整套已经移除。** 它服务的是"服务端推 APK、客户端装 APK"的分发模型;Web
+客户端由浏览器自行更新,没有 APK 可推,也没有"安装前"这个时机。
+
+管理后台仍可写 `config.versions`,但 `/client/*` **不再读取它**。
+:::
+
+## 协商发生在握手最前面
+
+早于签名校验、早于封禁判定。理由很直接:**双方连"用哪套线格式说话"都没谈拢时,
+后面的字段谁也不该解读。**
 
 ```mermaid
 flowchart TB
-    REQ["/client/init"] --> H1{版本在<br/>allowed_versions?}
-    H1 -->|否| FORCE["200 force_update:true<br/>必须更新(硬闸门)"]
-    H1 -->|是| SIGNED["签发会话<br/>下发完整响应"]
-    SIGNED --> SOFT{latest_version<br/>按渠道比较高于当前?}
-    SOFT -->|是| TIP["客户端弹软提示<br/>可暂不更新"]
-    SOFT -->|否| SILENT["不提示,正常进入"]
+    REQ["/client/init<br/>protocol_versions: [...]"] --> X{与服务端支持集<br/>有交集?}
+    X -->|无| F["400 protocol_version_unsupported<br/>握手终止"]
+    X -->|有| PICK["按服务端优先级选一个"]
+    PICK --> NEXT["继续:签名 → 渠道 → 封禁 → 签发会话"]
 
-    style FORCE fill:#ff6b6b,color:#fff
-    style TIP fill:#ffd43b
-    style SILENT fill:#51cf66
+    style F fill:#ff6b6b,color:#fff
+    style NEXT fill:#51cf66
 ```
 
-**先硬后软**:握手时先判版本白名单(硬),通过了才轮到 `latest_version`(软)。硬闸门不过直接强制更新,根本到不了软提示。
+## 两条规则
 
-## 硬闸门:版本白名单
+### 1. 按服务端的优先级顺序选
 
-`allowed_versions` 不为空且当前版本不在列表时,握手返回:
+交集里可能有多个版本。取哪一个由**服务端**的偏好顺序决定,不看客户端上报的顺序。
+
+版本策略属服务端职权:哪一版稳定、哪一版正在灰度、哪一版准备下线,只有服务端知道。
+让客户端的排序决定选型,等于把运维决策交给一个跑在玩家浏览器里、可被随意改写的程序。
+
+实现上就是遍历服务端的 `supportedProtocolVersions`(降序),取第一个客户端也支持的。
+
+### 2. 无交集时失败,客户端不得降级
 
 ```json
+// HTTP 400
 {
   "success": false,
-  "force_update": true,
-  "current_version": "3.9.0",
-  "update_url_normal": "https://.../normal.apk",
-  "update_url_internal_test": "https://.../internal.apk"
+  "error": "protocol_version_unsupported",
+  "message": "客户端与服务端没有共同支持的协议版本,请更新客户端"
 }
 ```
 
-::: warning 这是 HTTP 200,不是 4xx
-客户端 `Net.postJson` 对 HTTP ≥400 会抛 `IOException`,读不到 body 里的 update URL。所以版本闸门必须用 **200 + 顶层 `force_update`**。此分支**不签发 access_token**,客户端拿到 `force_update` 就停下走更新流程,不会继续握手。
+::: warning 为什么禁止"挑个最接近的凑合用"
+降级的失败方式很坏:它通常**不会立刻报错**。双方仍然能完成握手、能收发请求,
+只是在某个字段上悄悄读出错值——可能是一个多出来的枚举值被忽略,可能是一个改了
+语义的字段被按老意思解读。
+
+等到症状出现时,现场早已离协商那一刻很远了。明确失败反而是最便宜的处理方式。
 :::
 
-`update_url_*` 没配的渠道,对应 key 省略(避免客户端 `optString` 拿到空串误判)。
+## 响应回两个字段
 
-## 软提示:latest_version
-
-这是给"有新版但不强制"场景用的。服务端只需告诉客户端**最新版本号是多少**,**过滤逻辑全在客户端**:
-
-```mermaid
-flowchart TB
-    LV["服务端下发 latest_version"] --> CH{用户渠道?}
-    CH -->|正式版 normal| N["比较 major.minor<br/>4.0.x → 4.0.y 不提示<br/>4.0 → 4.1 才提示"]
-    CH -->|内测版 internal-test| I["比较完整版本<br/>4.0.0 → 4.0.1 也提示"]
-    N --> P["提示:立即更新 / 暂不更新"]
-    I --> P
+```json
+{ "protocol_version": 1, "protocol_versions": [1] }
 ```
 
-| 渠道 | 何时提示 |
+| 字段 | 含义 |
 |---|---|
-| **正式版(`normal`)** | 仅当 `latest_version` 的 **major.minor** 高于当前。补丁号变化(4.0.0→4.0.5)**不打扰** |
-| **内测版(`internal-test`)** | **任意**版本位升高即提示(含补丁号,4.0.0→4.0.1) |
+| `protocol_version` | **本次会话**协商出的版本,双方据此解读后续所有字段 |
+| `protocol_versions` | 服务端支持的**全集** |
 
-软提示可"暂不更新"继续启动,**不阻断**。`latest_version` 为空/省略则完全不提示。
+只回协商结果是不够的:协商失败时客户端只知道"谈崩了",不知道该升到哪一版。
+下发全集让它能直接告诉玩家"请更新到支持协议 vN 的版本"。
 
-## 为什么单一版本号通常就够
+## 新增一个协议版本时
 
-因为过滤在客户端,服务端**不需要为两个渠道维护两套版本号**。举例:服务端对所有人下发 `latest_version = "4.0.5"`:
+1. 在 `internal/api/client/handlers.go` 的 `supportedProtocolVersions` 里**按优先级插入**
+   新版本号;
+2. 在架构协议文档里登记该版本与前一版的差异;
+3. 让 `protocol_test.go` 的协商用例覆盖"新旧客户端各自能谈成什么"。
 
-```mermaid
-flowchart LR
-    LV["latest_version = 4.0.5<br/>(对所有人一样)"] --> A["内测用户(当前4.0.0)<br/>4.0.0 < 4.0.5 → 提示<br/>下内测 APK"]
-    LV --> B["正式用户(当前4.0.0)<br/>major.minor 4.0==4.0 → 不打扰"]
-```
+协商逻辑与响应字段**无需改动**——它们本来就是按集合写的。
 
-- **内测用户**:`4.0.0 < 4.0.5` → 提示,下 `update_url_internal_test`。
-- **正式用户**:`major.minor 4.0 == 4.0` → 不提示,补丁版本不打扰。
+## 与客户端完整性凭据的关系
 
-之后发 `4.1.0`,改 `latest_version` 即可:内测继续提示,正式用户因 `4.0 < 4.1` 也开始提示,下 `update_url_normal`。"内测发补丁、大版本才推正式"的策略,靠客户端按位过滤天然实现。
+协议版本协商**不是**安全机制,它解决的是兼容性。
 
-需要两渠道**不同版本线**(如内测 4.2.x、正式停 4.1.x)时,才按 `channel` 分别返回不同 `latest_version`。
+真正的完整性凭据是 `signature`(与 `channel`),见 [防改包](./anti-tamper)。
+两者在握手里相邻,但目的不同:协商回答"我们说不说同一种话",签名回答"你是不是
+我认识的那个客户端"。
 
-## APK 完整性校验
+::: tip Web 端没有不可绕过的完整性凭据
+Android 端的 APK 签名摘要之所以有效,是因为**私钥不在客户端**,重打包必然改变签名。
+Web 客户端整个跑在玩家浏览器里,不存在等价物。
 
-`update_apk_sha256` 让客户端**安装前校验**下载的 APK,防中间人推恶意包:
-
-```mermaid
-flowchart LR
-    D["按渠道下载 APK"] --> H["计算 SHA-256"]
-    H --> C{与下发的<br/>update_apk_sha256<br/>一致?}
-    C -->|是| INSTALL["✅ 拉起安装"]
-    C -->|否| REJECT["❌ 拒装(疑似被篡改)"]
-```
-
-::: tip 两渠道 APK 不同时按渠道下发哈希
-若正式版与内测版是不同的 APK 文件,单一 `update_apk_sha256` 只能匹配其中一个,另一渠道会校验失败。解法是服务端**按请求里的 `channel` 返回对应渠道那个 APK 的哈希**(`update_apk_sha256_internal_test` 优先用于内测渠道,否则回退通用值)。这正是本仓库已实现的逻辑。
+因此 Web 端的一切校验都只在服务端有意义——见 [服务端是唯一权威](/contributing/discipline)。
 :::
-
-强烈建议下发哈希。缺失时客户端记 WARN 并跳过校验(安全性下降,不建议长期如此)。
-
-## 软提示与硬闸门的关系
-
-`latest_version` 是**软提示**,**不替代**强制更新和版本白名单两道硬闸门。三者可同时配置:
-
-- 硬闸门保证"太旧的版本根本不让玩"。
-- 软提示负责"有新版了,温和提醒一下"。
-
-硬闸门的下载 URL 渠道选择,也跟随用户所选渠道,与软提示一致。
 
 ## 配置入口
 
-全在后台「版本管理」页:
+协议版本**不在管理后台配置**,它是代码里的常量。原因:改协议版本必然伴随代码改动,
+把它做成运行时开关只会制造"配置说支持、代码其实不支持"的错位。
 
-- 允许的客户端版本(白名单)
-- 最新版本号(软提示)
-- 正式/内测通道 APK URL
-- 各渠道 APK SHA-256
-
-存入 `config.versions`,握手时即时生效。运维语义见 [管理后台使用](/self-host/admin-panel#_1-版本管理-最关键)。
+后台「版本管理」页写入的 `config.versions` 现已不被 `/client/*` 读取,详见
+[管理后台使用](/self-host/admin-panel#_1-版本管理-最关键)。

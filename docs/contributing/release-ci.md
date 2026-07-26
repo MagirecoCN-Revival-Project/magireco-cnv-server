@@ -40,7 +40,7 @@ flowchart TB
 第一步就是硬刹车:校验 `github.repository` 在白名单内,否则 `fail-fast`。防 fork 或误配置在非预期仓库跑发布、向外部发请求。
 
 ```python
-ALLOWED = {"MagirecoCN-Revival-Project/magirecocn-resource-server"}
+ALLOWED = {"MagirecoCN-Revival-Project/magireco-cnv-server"}
 if repo not in ALLOWED:
     sys.exit(1)
 ```

@@ -56,13 +56,16 @@ func TestInit_OmitsEmptyOptionalStrings(t *testing.T) {
 
 ```mermaid
 flowchart LR
-    J["客户端 Java 源码<br/>(唯一真理)"] --> T["protocol_test.go<br/>(把真理编码成断言)"]
+    J["架构协议文档<br/>(唯一真理)"] --> T["protocol_test.go<br/>(把线格式编码成断言)"]
     T --> H["handler 实现"]
     H -->|改动| T
-    T -->|"红 = 真机会崩"| FIX["必须修到绿"]
+    T -->|"红 = 破坏了契约"| FIX["必须修到绿"]
 ```
 
-**改任何 `/client/*` 响应,先看这套测试是否还绿。** 红了说明你破坏了与客户端的契约。详见 [协议保真原则](./protocol-fidelity)。
+**改任何 `/client/*` 响应,先看这套测试是否还绿。** 红了说明你破坏了与客户端的契约。
+
+它守两个方向:该有的字段在,**以及已移除的字段确实不在**——后者要在把对应配置
+种进库之后断言,证明"配置存在也不下发"。详见 [协议保真原则](./protocol-fidelity)。
 
 ## 测试模式:postJSON / postRaw
 
@@ -92,14 +95,14 @@ func TestInit_MyNewField(t *testing.T) {
     srv := newRouter(h)
 
     // 1. 种入配置
-    _ = st.ConfigSet(context.Background(), "versions", map[string]any{
-        "allowed_versions": []string{"4.0.0"},
-        "my_new_field":     "expected-value",
+    _ = st.ConfigSet(context.Background(), "features", map[string]any{
+        "account_enabled": true,
+        "my_new_field":    "expected-value",
     })
 
     // 2. 发请求
     resp := postJSON(t, srv, "/client/init", map[string]any{
-        "version": "4.0.0", "device_id": "dev_x", "signature": "", "channel": "normal",
+        "device_id": "dev_x", "protocol_versions": []int{1},
     })
 
     // 3. 断言字段在客户端期望的位置

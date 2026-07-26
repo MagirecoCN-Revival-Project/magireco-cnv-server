@@ -107,7 +107,11 @@ func (s *Scheduler) runPackOnce(ctx, c) {
 }
 ```
 
-打包完会把产物元数据写进 `offline_package` 表,客户端 `/client/offline-package` 就能拿到新包。检查间隔取 `min(intervalSec, 60s)`,保证你把周期改短时能及时生效。打包器本身见 [离线整包打包器](./packer)。
+打包完会把产物元数据写进 `offline_package` 表。
+
+⚠️ **消费该表的 `/client/offline-package` 端点已移除**——Web 客户端按需流式取用资产,不走整包分发。打包器与本任务暂时保留,但目前没有客户端会来取。
+
+检查间隔取 `min(intervalSec, 60s)`,保证你把周期改短时能及时生效。打包器本身见 [离线整包打包器](./packer)。
 
 ## 内存态 vs 持久态
 

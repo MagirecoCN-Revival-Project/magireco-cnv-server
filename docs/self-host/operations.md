@@ -9,21 +9,21 @@
 仿 MCSManager 风格的远程拉脚本 + `bash` 执行,**不需要 clone 仓库**:
 
 ```bash
-sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magirecocn-resource-server/main/deploy/install.sh | bash"
+sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magireco-cnv-server/main/deploy/install.sh | bash"
 # 或用 curl
-sudo su -c "curl -fsSL https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magirecocn-resource-server/main/deploy/install.sh | bash"
+sudo su -c "curl -fsSL https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magireco-cnv-server/main/deploy/install.sh | bash"
 ```
 
 弹出交互菜单,选 `1) panel` / `2) node-business` / `3) node-edge`(管道里的 `stdin` 被脚本读 `/dev/tty` 拿到)。
 也能跳过菜单直接指定角色:
 
 ```bash
-sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magirecocn-resource-server/main/deploy/install.sh | bash -s -- panel"
-sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magirecocn-resource-server/main/deploy/install.sh | bash -s -- node-business"
-sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magirecocn-resource-server/main/deploy/install.sh | bash -s -- node-edge"
+sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magireco-cnv-server/main/deploy/install.sh | bash -s -- panel"
+sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magireco-cnv-server/main/deploy/install.sh | bash -s -- node-business"
+sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magireco-cnv-server/main/deploy/install.sh | bash -s -- node-edge"
 ```
 
-二进制脚本会从 [GitHub Release latest](https://github.com/MagirecoCN-Revival-Project/magirecocn-resource-server/releases/latest) 按 `uname -m` 选 `amd64` / `arm64` 自动下载;systemd unit 与边缘 `.env` 模板**内嵌**在脚本里,
+二进制脚本会从 [GitHub Release latest](https://github.com/MagirecoCN-Revival-Project/magireco-cnv-server/releases/latest) 按 `uname -m` 选 `amd64` / `arm64` 自动下载;systemd unit 与边缘 `.env` 模板**内嵌**在脚本里,
 没有外部模板文件依赖。
 
 ### 从仓库 checkout(开发/离线包)
@@ -215,7 +215,7 @@ journalctl -u magireco-node-business --since "1 min ago"
 |---|---|
 | 临时停服维护 | 后台「服务器控制」切 `维护中` + 维护文案;无需重启 |
 | 紧急封禁某设备 | 后台「设备封禁」按 device_id 封;或「心跳监控」里直接封在线设备 |
-| 强制所有人更新 | 「版本管理」把旧版本移出白名单,旧客户端握手即被 `force_update` |
+| 强制所有人更新 | ⚠️ **已无此手段**:APK 版本闸门已移除,浏览器自行更新。需要切断旧客户端时,只能通过[协议版本协商](/security/version-gates)——发布新协议版本并从服务端支持集里移除旧版 |
 | 换下载线路 | 「资源管理」改镜像组;或「心跳监控」给个别卡住的设备手动换线 |
 | 重置玩家/管理员密码 | `admintool reset-account` / `reset-admin` |
 | 轮换资源签名密钥 | 「资源管理」页操作 |

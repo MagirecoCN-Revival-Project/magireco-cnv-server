@@ -29,7 +29,7 @@ export default withMermaid(
 
       editLink: {
         pattern:
-          'https://github.com/MagirecoCN-Revival-Project/magirecocn-resource-server/edit/main/docs/:path',
+          'https://github.com/MagirecoCN-Revival-Project/magireco-cnv-server/edit/main/docs/:path',
         text: '在 GitHub 上编辑此页',
       },
 
@@ -99,7 +99,7 @@ export default withMermaid(
               { text: '限流与防爆破', link: '/security/rate-limiting' },
               { text: '受信任代理与来源 IP', link: '/security/trust-proxy' },
               { text: 'PoW 人机验证', link: '/security/captcha-pow' },
-              { text: '版本闸门与软提示', link: '/security/version-gates' },
+              { text: '协议版本协商', link: '/security/version-gates' },
             ],
           },
         ],
@@ -134,7 +134,7 @@ export default withMermaid(
       socialLinks: [
         {
           icon: 'github',
-          link: 'https://github.com/magirecocn-revival-project/magirecocn-resource-server',
+          link: 'https://github.com/magirecocn-revival-project/magireco-cnv-server',
         },
       ],
 

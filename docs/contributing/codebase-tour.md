@@ -137,7 +137,7 @@ web/
 | 某个 SQL | `internal/store/account.go` 或 `etc.go` |
 | 某个配置项怎么读 | 搜 `ConfigGet(ctx, "<key>"` |
 | 某个限流配额 | `cmd/node/main.go` 里的 `NewLimiter(...)` |
-| 协议字段的"真理" | `protocol_test.go` + 客户端 Java 源码 |
+| 协议字段的"真理" | 架构协议文档(`spec/*.md`),由 `protocol_test.go` 守护 |
 
 ## 阅读顺序建议
 

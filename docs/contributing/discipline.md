@@ -28,13 +28,22 @@ flowchart LR
 
 | 端点 | 关键字段（节选） |
 |---|---|
-| `/client/init` | `banned`/`ban_reason`、`force_update`、`access_token`、`server{...}`、`client{...}`、`features{...}`、`services{...}`、`contributors[]`、`directory{payload,sig}` |
-| `/client/online-download` | `resource_token`、`groups[]{name,mirrors[]}`、兼容顶层平铺 `mirrors[]` |
-| `/client/offline-package` | `download_url`、`package_version`、`sha256`（**不是** md5） |
-| `/client/hot-update` | `js{version,sha256,download_url,size}`、`scenario{...}` |
-| `/client/heartbeat` | 响应 `action`：`ok`/`switch_mirrors`/`ban`/`maintenance` |
+| `/client/init` | `protocol_version`/`protocol_versions`、`access_token`、`server_time_at`、`banned`/`ban_reason`、`server{...}`、`features{...}`、`asset_auth{type,...}`、`services{...}`、`directory{payload,sig}` |
+| `/client/heartbeat` | 响应 `action`：`ok`/`ban`/`maintenance` |
+| `/client/scene-manifest` | `scene_id`、`assets[]{path}` |
 
-字段从哪来、长什么样的"真理"在 `internal/api/client/handlers.go` + `state.go`，并由 `protocol_test.go` 守护。改之前先读 [协议保真原则](./protocol-fidelity)。
+字段长什么样的**唯一真理是架构协议文档**（`magirecocn-architecture-protocol-document`），
+由 `protocol_test.go` 守护。改之前先读 [协议保真原则](./protocol-fidelity)。
+
+::: warning 已移除的端点不再是契约
+`/client/method-select`、`/client/online-download`、`/client/offline-package`、
+`/client/hot-update` 已随 Android 端弃维一并移除（现返回 404），
+`/client/init` 的 `client{...}`/`spoof{...}`/`force_update` 亦然。
+
+**这次破坏性变更是有意为之**，因为它的唯一消费者已经停止维护——上面那条"先加后废"
+的过渡纪律针对的是**仍有存量客户端在跑**的字段。判据始终是"还有没有人在读"，
+不是"字段存在了多久"。
+:::
 
 ::: warning 可选字符串为空时省略 key，绝不发 `null`
 加可选字符串用 `putIfNonEmpty`、可选整数用 `putIfNonZero`。这是最容易踩、后果最隐蔽的坑。

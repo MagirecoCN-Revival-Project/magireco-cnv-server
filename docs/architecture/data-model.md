@@ -124,7 +124,7 @@ erDiagram
 | key | 内容 | 谁读 |
 |---|---|---|
 | `server` | 服务器状态、维护文案、预计恢复时间 | `/client/init` 的 `server` 对象 |
-| `versions` | 版本白名单、更新 URL、latest_version、伪装字段、APK 哈希 | `/client/init` 的 `client`/`spoof` |
+| `versions` | 版本白名单、更新 URL、APK 哈希 | ⚠️ **已无消费者**:APK 版本闸门移除后 `/client/*` 不再读取,仅管理后台仍可读写 |
 | `features` | 在线/离线下载开关、停用文案 | `/client/init` 的 `features` |
 | `services` | 验证码 URL、代理后端、游戏服 host | `/client/init` 的 `services` |
 | `offline_pack` | 离线包最低版本门槛 | `/client/init` 的 `offline_pack` |

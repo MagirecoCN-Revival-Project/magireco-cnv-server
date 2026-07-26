@@ -59,13 +59,19 @@ flowchart TB
 
 通过**方言抽象**(`Dialect` 接口),同一套业务 SQL 适配 PostgreSQL / MySQL / SQLite。业务代码统一用 `?` 占位符,存储层按方言改写(PG 转 `$N`)、生成不同的 UPSERT 语法。详见 [存储层与多方言](/contributing/store-dialects)。
 
-### 4. 协议字段以客户端 Java 源码为唯一真理
+### 4. 协议字段以架构协议文档为唯一真理
 
-`/client/*` 响应的每个字段名、嵌套层级、空值处理都**严格对齐客户端 Java 代码**。比如可选字符串字段为空时必须**省略 key**(不能发 JSON `null`,否则 Android `org.json` 的 `optString` 会拿到字符串 `"null"`)。这类约束有一整套保真测试守护。详见 [协议保真原则](/contributing/protocol-fidelity)。
+`/client/*` 响应的每个字段名、嵌套层级、空值处理都以**架构协议文档**
+(`magirecocn-architecture-protocol-document`)为准。比如可选字符串字段为空时必须
+**省略 key**(不能发 JSON `null`)——"字段缺席"与"字段为空"在客户端是两种不同的判断。
+这类约束有一整套保真测试守护。详见 [协议保真原则](/contributing/protocol-fidelity)。
+
+> 该锚点曾经是客户端的 Java 源码。Android 客户端已弃维,今后是**文档定契约、
+> 两侧各自实现**;实现与文档冲突时以文档为准。
 
 ### 5. 配置即时生效,无需重启
 
-运行配置存数据库的 `config` 表,客户端**下次握手即读到新值**。运维改维护状态、版本白名单、镜像列表都不打断服务。环境变量只承载"部署级"的东西(数据库地址、密钥、安全闸门)。
+运行配置存数据库的 `config` 表,客户端**下次握手即读到新值**。运维改维护状态、功能开关都不打断服务。环境变量只承载"部署级"的东西(数据库地址、密钥、安全闸门)。
 
 ## 三类入口,三套会话
 
@@ -96,7 +102,7 @@ flowchart LR
 |---|---|---|
 | `cmd/node` | 节点装配:`runBusiness`(DB + 全部 API + 调度器 + 静态)/ `runEdge`(资源分发);均挂管控 WS | [请求生命周期](./request-lifecycle) |
 | `cmd/panel` | 面板:节点注册表(SQLite)+ WS 管控连接器 + 管理 API/WebUI | [多节点协调](./multi-node) |
-| `internal/api/client` | `/client/*` 6 个握手接口 | [客户端握手协议](./client-protocol) |
+| `internal/api/client` | `/client/*` 3 个协议接口 | [客户端握手协议](./client-protocol) |
 | `internal/api/{account,user,admin,captcha,setup}` | 各业务域 | [三套会话](./sessions) |
 | `internal/{control,directory,panelstore}` | 面板↔节点管控 / 签名目录 / 面板存储 | [多节点协调](./multi-node) |
 | `internal/store` | 方言抽象 + 全部 SQL | [数据模型](./data-model) |

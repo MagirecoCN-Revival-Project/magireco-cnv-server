@@ -1,7 +1,7 @@
 name: 🛠️ 构建并发布服务端
 
 # ╔════════════════════════════════════════════════════════════════════╗
-# ║   magirecocn-resource-server  ——  服务端构建与发布                 ║
+# ║   magireco-cnv-server  ——  服务端构建与发布                         ║
 # ╠════════════════════════════════════════════════════════════════════╣
 # ║                                                                    ║
 # ║ 版本规则                                                            ║
@@ -80,7 +80,7 @@ jobs:
           python3 <<'SCRIPT_END'
           import os, sys
 
-          ALLOWED = {"MagirecoCN-Revival-Project/magirecocn-resource-server"}
+          ALLOWED = {"MagirecoCN-Revival-Project/magireco-cnv-server"}
           repo = os.environ.get("REPO", "")
 
           if repo not in ALLOWED:

@@ -4,7 +4,7 @@ layout: home
 hero:
   name: 魔法纪录复兴计划
   text: 服务端文档
-  tagline: 为「魔法纪录 CNV 客户端」配套的 Go 服务端 —— 架构、安全机制与贡献者指南
+  tagline: 魔法纪录复刻计划的 Go 服务端 —— 架构、安全机制与贡献者指南
   actions:
     - theme: brand
       text: 我只想把它跑起来
@@ -22,13 +22,13 @@ features:
     details: PostgreSQL / MySQL / SQLite 通过方言抽象统一支持;迁移内嵌、启动自动执行、幂等可重复运行。
   - icon: 🛡️
     title: 纵深防御
-    details: APK 签名闸门、版本化 scrypt 口令哈希、滑动会话、按 IP/会话限流、受信任代理、PoW 人机验证。
+    details: 版本化 scrypt 口令哈希、滑动会话、按 IP/会话限流、受信任代理、PoW 人机验证、客户端完整性闸门。
   - icon: 🌐
     title: 面板 + 多节点
     details: 业务节点持有数据库与全部 API,边缘节点就近分发资源;面板经 WebSocket 管控连接监控各节点,客户端凭签名目录安全发现节点。
   - icon: 📦
-    title: 在线 + 离线下发
-    details: 镜像组、S3 自发现、热更新包、服务端离线整包打包,统一由管理后台编排。
+    title: 按需流式资产
+    details: 场景包是清单与调度单位、文件是传输与缓存单位;客户端与本地缓存做差集,只拉缺失的文件。
 ---
 
 <div class="audience-grid">

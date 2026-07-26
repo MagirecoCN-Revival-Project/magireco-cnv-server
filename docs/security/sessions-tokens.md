@@ -68,7 +68,7 @@ flowchart TB
 
 ## 资源 token:无状态短时签名
 
-`/client/online-download` 返回的 `resource_token` 不走数据库,而是 **HMAC 短时签名**:
+握手响应里 `asset_auth` 承载的 `resource_token` 不走数据库,而是 **HMAC 短时签名**:
 
 ```go
 bucket := now / windowSec          // 时间窗编号
