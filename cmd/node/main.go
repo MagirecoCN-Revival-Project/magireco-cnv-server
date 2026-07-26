@@ -285,6 +285,7 @@ func runBusiness(ctx context.Context, cfg *config.Config, dirJSON json.RawMessag
 		Heartbeats:          hearts,
 		AutoBan:             autoBan,
 		DirectoryJSON:       dirJSON,
+		DevMode:             cfg.DevMode,
 		// SceneAssets 尚未接入构建管线：场景清单的正式形状是待决项 R2。
 		// nil = 该功能未启用，/client/scene-manifest 明确返回 503 而非空清单——
 		// 空清单会被客户端理解为"该场景无需任何资产",从而静默进入残缺场景。
@@ -420,6 +421,19 @@ func runBusiness(ctx context.Context, cfg *config.Config, dirJSON json.RawMessag
 		},
 	}
 	sch.Start(ctx)
+
+	// ── 部署形态告警 ────────────────────────────────────────────────────
+	// 这两条都不阻止启动，但必须在日志里显眼：它们描述的是「这个部署与生产
+	// 应有的样子不一样」，而这种偏差恰恰是最容易被遗忘地留在生产里的东西。
+	if cfg.DevMode {
+		log.Warn("⚠️ 开发模式已开启（CNV_DEV_MODE）—— 会下发协议的开发期临时值，" +
+			"生产环境务必关闭")
+	}
+	if len(dirJSON) == 0 {
+		log.Warn("⚠️ 未配置签名节点目录（CNV_DIRECTORY_FILE）—— 握手不下发 directory。" +
+			"这只应出现在开发部署：缺少目录意味着节点路由脱离服务端控制，" +
+			"想把流量从出问题的节点挪走都做不到，而客户端那份缓存可能是任意久以前的")
+	}
 
 	log.Info("业务节点启动", "addr", cfg.Addr, "node_id", cfg.NodeID)
 	startHTTP(ctx, cfg, r, log)

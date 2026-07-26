@@ -781,6 +781,7 @@ func TestInit_AssetAuthTokenIsVerifiable(t *testing.T) {
 // 空清单会被客户端理解为"该场景无需任何资产",从而静默进入残缺场景。
 func TestSceneManifest_UnavailableWhenNotWired(t *testing.T) {
 	h, _ := newTestHandler(t)
+	h.DevMode = true // 开着开发模式,才能测到"没接清单"而不是被生产守卫拦下
 	srv := newRouter(h)
 	triple := authTripleFor(t, h, srv, "dev_sm_off")
 	body := map[string]any{"scene_id": "quest_101101"}
@@ -798,6 +799,7 @@ func TestSceneManifest_UnavailableWhenNotWired(t *testing.T) {
 
 func TestSceneManifest_RequiresSceneID(t *testing.T) {
 	h, _ := newTestHandler(t)
+	h.DevMode = true
 	h.SceneAssets = func(context.Context, string) ([]string, error) { return nil, nil }
 	srv := newRouter(h)
 	triple := authTripleFor(t, h, srv, "dev_sm_noid")
@@ -812,6 +814,7 @@ func TestSceneManifest_RequiresSceneID(t *testing.T) {
 
 func TestSceneManifest_UnknownSceneIs404(t *testing.T) {
 	h, _ := newTestHandler(t)
+	h.DevMode = true
 	h.SceneAssets = func(context.Context, string) ([]string, error) { return nil, nil }
 	srv := newRouter(h)
 	triple := authTripleFor(t, h, srv, "dev_sm_404")
@@ -829,6 +832,7 @@ func TestSceneManifest_UnknownSceneIs404(t *testing.T) {
 // R2 定稿后按扩展性规则**新增**字段(hash/size),本断言不应因此失败。
 func TestSceneManifest_MinimalShape(t *testing.T) {
 	h, _ := newTestHandler(t)
+	h.DevMode = true // 最小形状是开发期临时值,生产守卫下不可用
 	h.SceneAssets = func(_ context.Context, id string) ([]string, error) {
 		if id != "quest_101101" {
 			return nil, nil
@@ -852,6 +856,37 @@ func TestSceneManifest_MinimalShape(t *testing.T) {
 	first, _ := assets[0].(map[string]any)
 	if first["path"] != "resource/image_native/a.png" {
 		t.Errorf("assets[0].path = %v", first["path"])
+	}
+}
+
+// TestSceneManifest_ProductionGuard —— 清单的最小形状是**开发期临时值**,
+// 生产环境(DevMode=false)一律拒绝,**哪怕 SceneAssets 已经接好**。
+//
+// 这条守卫的价值在于:临时值的危险不是它们存在,而是它们可能不被发现地留在生产里。
+// 一个只含 path 的清单在生产里跑得好好的,直到某天需要靠 hash 做缓存失效,
+// 才发现它从来没有过。
+func TestSceneManifest_ProductionGuard(t *testing.T) {
+	h, _ := newTestHandler(t)
+	// 注意:不设 DevMode(默认 false = 生产),但把清单接好。
+	h.SceneAssets = func(context.Context, string) ([]string, error) {
+		return []string{"resource/image_native/a.png"}, nil
+	}
+	srv := newRouter(h)
+	triple := authTripleFor(t, h, srv, "dev_sm_guard")
+	body := map[string]any{"scene_id": "quest_101101"}
+	for k, v := range triple {
+		body[k] = v
+	}
+	code, out := postJSONRaw(t, srv, "/client/scene-manifest", body)
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("生产模式下应当 503,实际 %d: %v", code, out)
+	}
+	if out["error"] != "manifest_unavailable" {
+		t.Errorf("error = %v, want manifest_unavailable", out["error"])
+	}
+	// 不能因为拒绝就顺手回一个空清单——那正是守卫要防的静默降级。
+	if _, has := out["assets"]; has {
+		t.Errorf("被守卫拦下时不应返回 assets 字段, got %v", out["assets"])
 	}
 }
 

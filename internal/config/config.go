@@ -31,6 +31,17 @@ type Config struct {
 	ChannelAllowed    []string // 渠道白名单(空表示放行所有)
 	RequireSignature  bool     // 强制要求请求带非空 signature(即便白名单为空)
 
+	// DevMode 开发模式(CNV_DEV_MODE,默认 false = 生产)。
+	//
+	// 协议里有若干**开发期临时值**——待决项定稿前的占位形状,让两侧能先并行开工。
+	// 协议文档 06-dev-mode 的「生产守卫」要求:**生产环境不得下发任何临时值**。
+	// 本开关就是那道守卫在服务端侧的落点。
+	//
+	// 默认 false 是有意的:临时值的危险不在于它们存在,而在于**它们可能不被发现地
+	// 留在生产里**。忘了配这个变量的后果是功能不可用(显眼),而不是临时值悄悄
+	// 泄进生产(不显眼)。
+	DevMode bool
+
 	// 业务节点专用
 	DBURL               string        // postgres://...
 	ResourceTokenSecret []byte        // CNV_RESOURCE_TOKEN_SECRET, resource_token 的 HMAC 签名根密钥;不设则首次启动自动生成并持久化
@@ -87,6 +98,7 @@ func LoadFromEnv() (*Config, error) {
 		SignatureAllowed:  splitCSV(os.Getenv("CNV_SIGNATURE_WHITELIST")),
 		ChannelAllowed:    splitCSV(os.Getenv("CNV_CHANNEL_WHITELIST")),
 		RequireSignature:  boolOr("CNV_REQUIRE_SIGNATURE", false),
+		DevMode:           boolOr("CNV_DEV_MODE", false),
 		DBURL:             os.Getenv("CNV_DB_URL"),
 		CapWorkerURL:      os.Getenv("CNV_CAP_WORKER_URL"),
 		ClientSessionTTL:  durOr("CNV_CLIENT_SESSION_TTL", 7*24*time.Hour),

@@ -69,6 +69,11 @@ type Handler struct {
 	// SceneAssets 返回进入某场景所需的资产相对路径列表。
 	// 返回 nil 表示未知场景（客户端得到 404）。nil 函数 = 场景清单功能未启用。
 	SceneAssets func(ctx context.Context, sceneID string) ([]string, error)
+
+	// DevMode 开发模式。协议里的**开发期临时值**只在它为 true 时才允许下发,
+	// 这是协议文档 06-dev-mode「生产守卫」在服务端侧的落点。
+	// 当前受它管辖的只有场景清单的最小形状(见 sceneManifest)。
+	DevMode bool
 }
 
 // Routes 注册到 chi router。除 /init 外的所有端点都强制校验 authTriple。
@@ -490,6 +495,9 @@ type sceneManifestReq struct {
 // 当前为协议文档 06-dev-mode 规定的**开发期最小形状**，只含 path。
 // 清单的正式形状（hash / size / 增量 / 场景 ID 命名空间）仍是待决项 R2；
 // 定稿后按扩展性规则**新增字段**即可，客户端忽略未知字段，不破坏既有实现。
+//
+// ⚠️ 因为最小形状是**开发期临时值**，本端点受「生产守卫」管辖：DevMode=false
+// 时一律拒绝，哪怕 SceneAssets 已经接好。见下方注释。
 func (h *Handler) sceneManifest(w http.ResponseWriter, r *http.Request) {
 	var req sceneManifestReq
 	if !respond.ReadJSONAllowUnknown(w, r, &req) {
@@ -497,6 +505,19 @@ func (h *Handler) sceneManifest(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.SceneID == "" {
 		respond.Fail(w, http.StatusBadRequest, "missing_scene_id", "缺少 scene_id")
+		return
+	}
+	// ── 生产守卫（协议文档 06-dev-mode）─────────────────────────────────
+	// 清单的最小形状（只含 path）是 R2 定稿前的**开发期临时值**，生产环境
+	// **不得下发**。这里在 SceneAssets 判空之前拦，是为了让"生产环境不该有这个
+	// 端点"这件事与"清单还没接进来"区分开——两者的修法完全不同。
+	//
+	// 临时值的危险不在于它们存在，而在于**它们可能不被发现地留在生产里**：
+	// 一个只含 path 的清单在生产里跑得好好的，直到某天需要靠 hash 做缓存失效
+	// 才发现它从来没有过。守卫必须先于临时值生效。
+	if !h.DevMode {
+		respond.Fail(w, http.StatusServiceUnavailable, "manifest_unavailable",
+			"场景清单当前仅在开发模式下可用（清单格式待定，见 R2）")
 		return
 	}
 	if h.SceneAssets == nil {
