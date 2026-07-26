@@ -23,7 +23,7 @@
 **不得**因为"客户端已经校验过"而省略任何服务端校验。客户端那些校验只是为了少发
 一次注定失败的请求。
 
-具体到已定契约（见 [`magireco-web-client/docs/api-contract.md`](https://github.com/MagirecoCN-Revival-Project/magireco-web-client/blob/main/docs/api-contract.md)）：
+具体到已定契约（见架构协议文档仓库 `spec/`）：
 
 - **资产路径**：客户端已规范化并拒绝 `..`，服务端**仍须**独立做穿越防御
   （含百分号解码后的形态）。
