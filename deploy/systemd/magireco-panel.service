@@ -1,0 +1,39 @@
+# 面板。WordPress 式安装向导在浏览器里完成 DB/管理员配置;本 unit 只负责
+# 进程托管 + 自动重启。CNV_PANEL_KEY(cookie HMAC)由 deploy/install.sh
+# 在首次安装时生成并写入 /etc/magireco/panel.env。
+#
+# 修改后必须 `systemctl daemon-reload`。
+
+[Unit]
+Description=Magireco Revival Panel
+Documentation=https://github.com/MagirecoCN-Revival-Project/magirecocn-resource-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=magireco
+Group=magireco
+WorkingDirectory=/var/lib/magireco/panel
+EnvironmentFile=/etc/magireco/panel.env
+ExecStart=/opt/magireco/panel/bin/magireco-panel
+Restart=on-failure
+RestartSec=5s
+
+# Hardening:面板只需要读自己 /opt 的二进制 + 读写自己的 /var/lib + 监听网络
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/magireco/panel /var/log/magireco
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+StandardOutput=append:/var/log/magireco/panel.log
+StandardError=append:/var/log/magireco/panel.log
+
+[Install]
+WantedBy=multi-user.target

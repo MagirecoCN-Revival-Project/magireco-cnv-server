@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>登录 · 魔法纪录复兴计划</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+SC:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+<style>
+  body { background: linear-gradient(135deg, #efe6ff 0%, #fde9f3 45%, #fff7e6 100%); background-attachment: fixed; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="ui.jsx"></script>
+<!-- 面板注入业务节点 API 基址(window.MR_API_BASE);同源部署时此文件可缺省 -->
+<script src="/app-config.js"></script>
+<script src="api.jsx"></script>
+<script type="text/babel" src="auth-common.jsx"></script>
+<script type="text/babel">
+const { useState } = React;
+
+function LoginPage() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [remember, setRemember] = useState(true);
+  const [capStatus, setCapStatus] = useState("idle");
+  const [capToken, setCapToken] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const toast = useToast();
+
+  const submit = async (e) => {
+    e?.preventDefault();
+    if (!email || !password) { setError("请填写邮箱和密码"); return; }
+    if (capStatus !== "verified" || !capToken) { setError("请先完成人机验证"); return; }
+    setError("");
+    setSubmitting(true);
+    try {
+      const res = await Api.post("/auth/login", {
+        email, password, cap_token: capToken, remember,
+      });
+      if (res.token) Api.setToken(res.token);
+      toast("登录成功,正在跳转…", "ok");
+      const next = res.role === "user" ? "user.html" : "index.html";
+      setTimeout(() => { window.location.href = next; }, 400);
+    } catch (err) {
+      setError(err.message || "登录失败");
+      // 验证码消耗后需要重新验证
+      setCapStatus("idle");
+      setCapToken("");
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="auth-wrap">
+      <div className="auth-card">
+        <div className="auth-brand">
+          <div className="auth-brand-mark">魔</div>
+          <div>
+            <div className="auth-brand-text">魔法纪录复兴计划</div>
+            <div className="auth-brand-sub">magireco-revival.cn</div>
+          </div>
+        </div>
+        <div className="auth-title">登录</div>
+        <div className="auth-sub">使用邮箱登录,管理员账户自动跳转到管理后端</div>
+        <form className="auth-form" onSubmit={submit}>
+          <div className="field">
+            <label className="field-label">邮箱</label>
+            <input className="input" type="email" autoFocus placeholder="you@example.com"
+              value={email} onChange={(e) => setEmail(e.target.value)}/>
+          </div>
+          <div className="field">
+            <label className="field-label">
+              密码
+              <a href="forgot.html"
+                style={{ marginLeft: "auto", fontSize: 11.5, color: "var(--accent-700)", textDecoration: "none" }}>
+                忘记密码?
+              </a>
+            </label>
+            <input className="input mono" type="password" placeholder="••••••••"
+              value={password} onChange={(e) => setPassword(e.target.value)}/>
+          </div>
+
+          <CapWorkerWidget status={capStatus} onVerify={(s, t) => { setCapStatus(s); setCapToken(t || ""); }}/>
+
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--text-2)" }}>
+            <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)}
+              style={{ width: 14, height: 14, accentColor: "var(--accent-600)" }}/>
+            7 天内自动登录(仅在常用设备上勾选)
+          </label>
+
+          {error && (
+            <div style={{
+              padding: "8px 12px", borderRadius: 6,
+              background: "var(--red-50)", border: "1px solid rgba(220,38,38,0.3)",
+              color: "var(--red-500)", fontSize: 12.5,
+              display: "flex", alignItems: "center", gap: 8,
+            }}>
+              <I.Alert size={13}/>{error}
+            </div>
+          )}
+
+          <button type="submit" className="btn btn-primary" disabled={submitting}
+            style={{ justifyContent: "center", padding: "10px 14px", fontSize: 13, marginTop: 4 }}>
+            {submitting
+              ? <><span style={{ width: 12, height: 12, border: "2px solid #fff", borderTopColor: "transparent", borderRadius: "50%", display: "inline-block", animation: "spin 0.6s linear infinite" }}/> 登录中…</>
+              : "登录"}
+          </button>
+        </form>
+
+        <div className="auth-foot">
+          还没有账号? <a href="register.html">立即注册</a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<ToastProvider><LoginPage/></ToastProvider>);
+</script>
+</body>
+</html>

@@ -1,0 +1,114 @@
+/**
+ * 魔法纪录服务端文档站 —— 自定义皮肤
+ *
+ * 配色与客户端文档站对齐，取自 BootstrapActivity 启动界面强调色：
+ *   主强调色  #D63384（小圆粉）
+ *   次强调色  #9C5BC2（焰紫）
+ *   深色模式  #FF7AC2 / #B87FE0
+ * 在 VitePress 默认主题的 CSS 变量体系上覆写品牌色。
+ */
+
+:root {
+  --vp-c-brand-1: #c12a76;
+  --vp-c-brand-2: #d63384;
+  --vp-c-brand-3: #e85a9e;
+  --vp-c-brand-soft: rgba(214, 51, 132, 0.14);
+
+  /* 首页 Hero 渐变名字 */
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(
+    120deg,
+    #d63384 30%,
+    #9c5bc2
+  );
+
+  /* 首页 Hero 图标光晕 */
+  --vp-home-hero-image-background-image: linear-gradient(
+    -45deg,
+    rgba(214, 51, 132, 0.35) 50%,
+    rgba(156, 91, 194, 0.35) 50%
+  );
+  --vp-home-hero-image-filter: blur(48px);
+}
+
+.dark {
+  --vp-c-brand-1: #ff7ac2;
+  --vp-c-brand-2: #f368ad;
+  --vp-c-brand-3: #c54e8c;
+  --vp-c-brand-soft: rgba(255, 122, 194, 0.16);
+
+  --vp-home-hero-name-background: linear-gradient(
+    120deg,
+    #ff7ac2 30%,
+    #b87fe0
+  );
+}
+
+/* 受众入口卡片（首页用） */
+.audience-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin: 28px 0;
+}
+.audience-card {
+  display: block;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  padding: 20px 22px;
+  text-decoration: none !important;
+  transition: border-color 0.25s, transform 0.25s, background-color 0.25s;
+  background: var(--vp-c-bg-soft);
+}
+.audience-card:hover {
+  border-color: var(--vp-c-brand-1);
+  transform: translateY(-2px);
+}
+.audience-card h3 {
+  margin: 0 0 6px;
+  font-size: 17px;
+  color: var(--vp-c-text-1);
+}
+.audience-card p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--vp-c-text-2);
+}
+.audience-card .tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-bottom: 10px;
+  background: var(--vp-c-brand-soft);
+  color: var(--vp-c-brand-1);
+}
+
+/* 行内受众徽标 */
+.audience-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.6;
+  margin-right: 6px;
+}
+.audience-badge.player  { color: #c12a76; background: rgba(214, 51, 132, 0.12); }
+.audience-badge.tech    { color: #6f42c1; background: rgba(156, 91, 194, 0.14); }
+.audience-badge.contrib { color: #1f7a5c; background: rgba(31, 122, 92, 0.14);  }
+.dark .audience-badge.player  { color: #ff9ed1; }
+.dark .audience-badge.tech    { color: #c9a4ee; }
+.dark .audience-badge.contrib { color: #79d6b3; }
+
+/* 自定义首页特性卡片图标底色 */
+.VPFeature .icon {
+  background-color: var(--vp-c-brand-soft) !important;
+}
+
+/* 代码块圆角 */
+.vp-doc div[class*='language-'] {
+  border-radius: 10px;
+}

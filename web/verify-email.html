@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>邮箱验证 · 魔法纪录复兴计划</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+SC:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+<style>
+  body { background: linear-gradient(135deg, #e2f0ff 0%, #d8f7f0 55%, #f0fbfb 100%); background-attachment: fixed; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="ui.jsx"></script>
+<!-- 面板注入业务节点 API 基址(window.MR_API_BASE);同源部署时此文件可缺省 -->
+<script src="/app-config.js"></script>
+<script src="api.jsx"></script>
+<script type="text/babel" src="auth-common.jsx"></script>
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+function VerifyEmailPage() {
+  const [email, setEmail] = useState("");
+  const [code, setCode]   = useState("");
+  const [status, setStatus] = useState("idle"); // idle | sending | verifying | done | err
+  const [resendIn, setResendIn] = useState(0);
+  const [errMsg, setErrMsg]   = useState("");
+  const toast = useToast();
+
+  // 倒计时
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const t = setTimeout(() => setResendIn(r => r - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendIn]);
+
+  const sendCode = async () => {
+    if (!email) { toast("请输入邮箱", "err"); return; }
+    setStatus("sending");
+    try {
+      await Api.post("/auth/send-code", { email, purpose: "verify_email" });
+      setStatus("idle");
+      setResendIn(60);
+      toast("验证码已发送，请查收邮件", "ok");
+    } catch (err) {
+      setStatus("err");
+      setErrMsg("发送失败：" + (err.message || "未知错误"));
+    }
+  };
+
+  // 6 位码自动触发校验
+  useEffect(() => {
+    if (code.length !== 6 || status === "verifying" || status === "done") return;
+    (async () => {
+      setStatus("verifying");
+      try {
+        const res = await Api.post("/auth/verify-code", { email, code, purpose: "verify_email" });
+        if (res.success) {
+          setStatus("done");
+          toast("邮箱验证成功！", "ok");
+          setTimeout(() => { window.location.href = "user.html"; }, 1200);
+        } else {
+          setStatus("idle");
+          setCode("");
+          toast("验证码错误，请重试", "err");
+        }
+      } catch (err) {
+        setStatus("idle");
+        setCode("");
+        toast("验证失败：" + (err.message || "未知错误"), "err");
+      }
+    })();
+  }, [code]);
+
+  return (
+    <div className="auth-wrap">
+      <div className="auth-card">
+        <div className="auth-brand">
+          <div className="auth-brand-mark">魔</div>
+          <div>
+            <div className="auth-brand-text">魔法纪录复兴计划</div>
+            <div className="auth-brand-sub">邮箱验证</div>
+          </div>
+        </div>
+        <div className="auth-title">验证您的邮箱</div>
+        <div className="auth-sub">注册成功！请验证邮箱后才能使用云存档和游戏登录功能</div>
+
+        <div className="auth-form">
+          <div className="field">
+            <label className="field-label">注册邮箱</label>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input className="input" type="email" placeholder="you@example.com"
+                value={email} onChange={e => setEmail(e.target.value)}
+                disabled={status === "done"} />
+              <button type="button" className="btn"
+                disabled={!email || status === "sending" || resendIn > 0 || status === "done"}
+                onClick={sendCode}
+                style={{ whiteSpace: "nowrap", flexShrink: 0 }}>
+                {status === "sending"
+                  ? "发送中…"
+                  : resendIn > 0
+                    ? `${resendIn}s 重发`
+                    : <><I.Send size={12}/> 发送验证码</>}
+              </button>
+            </div>
+          </div>
+
+          <div className="field">
+            <label className="field-label">
+              验证码
+              {status === "verifying" && <span style={{ marginLeft: "auto", color: "var(--accent-700)", fontSize: 11.5 }}>校验中…</span>}
+              {status === "done"      && <span style={{ marginLeft: "auto", color: "var(--teal-600)", fontSize: 11.5 }}><I.Check size={11}/> 已验证</span>}
+            </label>
+            <input className="input mono" maxLength={6} placeholder="000000"
+              value={code}
+              disabled={status === "verifying" || status === "done"}
+              onChange={e => setCode(e.target.value.replace(/[^0-9]/g, ""))}
+              style={{ letterSpacing: "0.45em", textAlign: "center", fontSize: 17, fontWeight: 600 }} />
+            <div className="field-hint">在邮件中找到 6 位验证码后输入，10 分钟内有效</div>
+          </div>
+
+          {errMsg && (
+            <div style={{
+              padding: "8px 12px", borderRadius: 6,
+              background: "var(--red-50)", border: "1px solid rgba(220,38,38,0.3)",
+              color: "var(--red-500)", fontSize: 12.5,
+            }}>{errMsg}</div>
+          )}
+
+          {status === "done" && (
+            <div style={{
+              padding: "10px 14px", borderRadius: 6,
+              background: "var(--teal-50)", border: "1px solid rgba(20,184,166,0.4)",
+              color: "var(--teal-700)", fontSize: 13,
+            }}>邮箱验证成功！正在跳转…</div>
+          )}
+        </div>
+
+        <div className="auth-foot">
+          <a href="user.html">跳过（功能受限）</a> · <a href="login.html">重新登录</a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<ToastProvider><VerifyEmailPage /></ToastProvider>);
+</script>
+</body>
+</html>

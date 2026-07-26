@@ -1,0 +1,44 @@
+# 业务节点。配置(CNV_DB_URL / CNV_ADMIN_JWT_SECRET 等)由面板安装向导
+# 写入 /etc/magireco/node-business.env;本 unit 只负责进程托管。
+#
+# 流程:
+#   1) deploy/install.sh node-business  → 装二进制 + unit + 生成 ADMIN_JWT_SECRET
+#                                          (此时 CNV_DB_URL 还没有,服务不会启)
+#   2) 启动面板,在向导第 4 步勾"本机也装业务节点"
+#   3) 向导写完业务 DB 后,把 CNV_DB_URL 追加到 /etc/magireco/node-business.env
+#      并 systemctl start
+#
+# 注:本 unit 默认 enabled 但不立刻 start —— 等向导填完配置再起。
+
+[Unit]
+Description=Magireco Revival Business Node
+Documentation=https://github.com/MagirecoCN-Revival-Project/magirecocn-resource-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=magireco
+Group=magireco
+WorkingDirectory=/var/lib/magireco/node-business
+EnvironmentFile=/etc/magireco/node-business.env
+ExecStart=/opt/magireco/node-business/bin/magireco-node
+Restart=on-failure
+RestartSec=5s
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/magireco/node-business /var/log/magireco
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+StandardOutput=append:/var/log/magireco/node-business.log
+StandardError=append:/var/log/magireco/node-business.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,133 @@
+name: 📎 文档绑定提醒
+
+# ─────────────────────────────────────────────────────────────────────────
+# 纯「提醒」工作流，不拦截合并。
+#
+# 当 PR 满足以下任一条件、却没有在同一 PR 内更新 docs/ 时，贴一条「会自我
+# 消除」的提醒评论；合规时静默，若此前贴过提醒则改写为「已解除」：
+#
+#   (A) 契约级——改动 internal/api/client|account/（客户端可见契约字段/语义）。
+#   (B) 结构级——cmd/ 或 internal/ 下有 .go 文件被新增/删除/重命名（足以让
+#       codebase-tour / configuration / nodes / architecture 等文档失真；
+#       排除 _test.go）。
+#
+# 纪律出处：CLAUDE.md §4、docs/contributing/discipline.md。
+# 人类贡献者看这条；AI Agent 侧由 .claude/hooks/doc-binding-check.sh 提醒。
+# ─────────────────────────────────────────────────────────────────────────
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'docs/**'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: doc-binding-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  doc-binding:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 比对改动范围
+        id: scan
+        run: |
+          base='${{ github.event.pull_request.base.sha }}'
+          head='${{ github.event.pull_request.head.sha }}'
+
+          changed=$(git diff --name-only "$base" "$head" || true)
+          docs=$(printf '%s\n' "$changed" | grep -E '^docs/' || true)
+
+          # (A) 客户端可见契约代码（修改级）
+          contract=$(printf '%s\n' "$changed" | grep -E '^internal/api/(client|account)/' || true)
+
+          # (B) 代码结构变化：cmd/ 或 internal/ 下 .go 新增/删除/重命名/拷贝（排除测试）
+          structure=$(git diff --name-status "$base" "$head" | awk '
+            $1 ~ /^[ADRC]/ {
+              p = ($1 ~ /^[RC]/) ? $3 : $2
+              if (p ~ /^(cmd|internal)\/.*\.go$/ && p !~ /_test\.go$/) print $1"  "p
+            }' || true)
+
+          if { [ -n "$contract" ] || [ -n "$structure" ]; } && [ -z "$docs" ]; then
+            echo "compliant=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "reasons<<__EOF__"
+              if [ -n "$contract" ]; then
+                echo "**触及客户端可见契约代码**（\`/client/*\`、\`/account/*\`）："
+                printf '%s\n' "$contract" | sed 's/^/- `/; s/$/`/'
+                echo
+              fi
+              if [ -n "$structure" ]; then
+                echo "**改变服务端代码结构**（新增/删除/重命名 \`.go\`）："
+                printf '%s\n' "$structure" | sed -E 's/^([A-Z0-9]+)  (.*)$/- `\2` (\1)/'
+                echo
+              fi
+              echo "__EOF__"
+            } >> "$GITHUB_OUTPUT"
+            echo "::warning::改动可能让文档描述失真但未更新 docs/，详见 PR 评论"
+          else
+            echo "compliant=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 贴 / 撤 提醒评论
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- doc-binding-reminder -->';
+            const compliant = '${{ steps.scan.outputs.compliant }}' === 'true';
+            const reasons = `${{ steps.scan.outputs.reasons }}`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const blob = `${context.serverUrl}/${owner}/${repo}/blob/main`;
+
+            try {
+              const { data: comments } = await github.rest.issues.listComments({
+                owner, repo, issue_number, per_page: 100,
+              });
+              const existing = comments.find(c => c.body && c.body.includes(marker));
+
+              if (!compliant) {
+                const body = [
+                  marker,
+                  '### 📎 文档绑定提醒',
+                  '',
+                  '本 PR 的改动可能让文档描述与代码对不上，但没有在同一 PR 内更新 `docs/`：',
+                  '',
+                  reasons.trim(),
+                  '',
+                  `按仓库纪律（[契约纪律与文档绑定](${blob}/docs/contributing/discipline.md)、` +
+                  `[\`CLAUDE.md\` §4](${blob}/.claude/CLAUDE.md)）：改 \`/client/*\`、\`/account/*\` 的契约，` +
+                  '或改变服务端代码结构（包/入口/路由/`CNV_*` 配置/CLI 命令/节点角色等），' +
+                  '都要**同步更新对应文档**（接口文档 / codebase-tour / configuration / nodes / architecture）。',
+                  '',
+                  '- 若确实改了契约或结构 → 请补上对应 `docs/` 页面。',
+                  '- 若纯属内部实现、不影响任何文档描述 → 忽略本提醒即可（**本检查不拦截合并**）。',
+                ].join('\n');
+                if (existing) {
+                  await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+                } else {
+                  await github.rest.issues.createComment({ owner, repo, issue_number, body });
+                }
+              } else if (existing) {
+                const body = [
+                  marker,
+                  '### 📎 文档绑定提醒',
+                  '',
+                  '✅ 已在本 PR 内同步更新 `docs/`（或不再涉及契约 / 结构改动），提醒解除。',
+                ].join('\n');
+                await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+              }
+            } catch (e) {
+              // Fork PR 的只读 token 等情况下评论会失败；降级为警告，绝不让本工作流变红。
+              core.warning(`文档绑定提醒评论失败（可能是 fork PR 的只读权限）：${e.message}`);
+            }

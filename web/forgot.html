@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>找回密码 · 魔法纪录复兴计划</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+SC:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+<style>
+  body { background: linear-gradient(135deg, #fef3c7 0%, #fde9f3 55%, #efe6ff 100%); background-attachment: fixed; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="ui.jsx"></script>
+<!-- 面板注入业务节点 API 基址(window.MR_API_BASE);同源部署时此文件可缺省 -->
+<script src="/app-config.js"></script>
+<script src="api.jsx"></script>
+<script type="text/babel" src="auth-common.jsx"></script>
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+function ForgotPage() {
+  const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [capStatus, setCapStatus] = useState("idle");
+  const [capToken, setCapToken] = useState("");
+  const [stage, setStage] = useState("email"); // email | reset | done
+  const [sending, setSending] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [resendIn, setResendIn] = useState(0);
+  const [error, setError] = useState("");
+  const toast = useToast();
+
+  const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const t = setTimeout(() => setResendIn(r => r - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendIn]);
+
+  const sendCode = async () => {
+    if (!emailOk) { setError("邮箱格式不正确"); return; }
+    setError("");
+    setSending(true);
+    try {
+      await Api.post("/auth/send-code", { email, purpose: "reset" });
+      toast(`若该邮箱存在,验证码已发送至 ${email}`, "ok");
+      setStage("reset");
+      setResendIn(60);
+    } catch (err) {
+      setError(err.message || "发送失败");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const submit = async (e) => {
+    e?.preventDefault();
+    if (!code || code.length !== 6) { setError("请输入 6 位验证码"); return; }
+    if (password.length < 8) { setError("密码至少 8 位"); return; }
+    if (password !== confirm) { setError("两次输入的密码不一致"); return; }
+    if (capStatus !== "verified" || !capToken) { setError("请先完成人机验证"); return; }
+    setError("");
+    setSubmitting(true);
+    try {
+      await Api.post("/auth/forgot", {
+        email, code, new_password: password, cap_token: capToken,
+      });
+      setStage("done");
+      toast("密码已重置,请重新登录", "ok");
+      setTimeout(() => { window.location.href = "login.html"; }, 1200);
+    } catch (err) {
+      setError(err.message || "重置失败");
+      setCapStatus("idle");
+      setCapToken("");
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="auth-wrap">
+      <div className="auth-card">
+        <div className="auth-brand">
+          <div className="auth-brand-mark">魔</div>
+          <div>
+            <div className="auth-brand-text">魔法纪录复兴计划</div>
+            <div className="auth-brand-sub">magireco-revival.cn</div>
+          </div>
+        </div>
+        <div className="auth-title">找回密码</div>
+        <div className="auth-sub">使用注册邮箱接收验证码,设置新密码</div>
+
+        {stage === "email" && (
+          <form className="auth-form" onSubmit={(e) => { e.preventDefault(); sendCode(); }}>
+            <div className="field">
+              <label className="field-label">注册邮箱</label>
+              <input className="input" type="email" autoFocus placeholder="you@example.com"
+                value={email} onChange={(e) => setEmail(e.target.value)}/>
+            </div>
+            {error && (
+              <div style={{ padding: "8px 12px", borderRadius: 6, background: "var(--red-50)",
+                border: "1px solid rgba(220,38,38,0.3)", color: "var(--red-500)", fontSize: 12.5,
+                display: "flex", alignItems: "center", gap: 8 }}>
+                <I.Alert size={13}/>{error}
+              </div>
+            )}
+            <button type="submit" className="btn btn-primary" disabled={sending || !emailOk}
+              style={{ justifyContent: "center", padding: "10px 14px", fontSize: 13, marginTop: 4 }}>
+              {sending ? "发送中…" : "发送验证码"}
+            </button>
+          </form>
+        )}
+
+        {stage === "reset" && (
+          <form className="auth-form" onSubmit={submit}>
+            <div className="field">
+              <label className="field-label">
+                邮箱验证码
+                {resendIn > 0
+                  ? <span style={{ marginLeft: "auto", color: "var(--text-3)", fontSize: 11.5 }}>{resendIn}s 后可重发</span>
+                  : <button type="button" onClick={sendCode}
+                      style={{ marginLeft: "auto", fontSize: 11.5, color: "var(--accent-700)",
+                        background: "transparent", border: "none", cursor: "pointer", padding: 0 }}>
+                      重新发送
+                    </button>}
+              </label>
+              <input className="input mono" maxLength={6} placeholder="000000"
+                value={code} onChange={(e) => setCode(e.target.value.replace(/[^0-9]/g, ""))}
+                style={{ letterSpacing: "0.45em", textAlign: "center", fontSize: 17, fontWeight: 600 }}/>
+            </div>
+            <div className="field">
+              <label className="field-label">新密码</label>
+              <input className="input mono" type="password" placeholder="至少 8 位"
+                value={password} onChange={(e) => setPassword(e.target.value)}/>
+            </div>
+            <div className="field">
+              <label className="field-label">确认新密码</label>
+              <input className="input mono" type="password" placeholder="再次输入"
+                value={confirm} onChange={(e) => setConfirm(e.target.value)}/>
+            </div>
+            <CapWorkerWidget status={capStatus} onVerify={(s, t) => { setCapStatus(s); setCapToken(t || ""); }}/>
+            {error && (
+              <div style={{ padding: "8px 12px", borderRadius: 6, background: "var(--red-50)",
+                border: "1px solid rgba(220,38,38,0.3)", color: "var(--red-500)", fontSize: 12.5,
+                display: "flex", alignItems: "center", gap: 8 }}>
+                <I.Alert size={13}/>{error}
+              </div>
+            )}
+            <button type="submit" className="btn btn-primary" disabled={submitting}
+              style={{ justifyContent: "center", padding: "10px 14px", fontSize: 13, marginTop: 4 }}>
+              {submitting ? "处理中…" : "重置密码"}
+            </button>
+          </form>
+        )}
+
+        {stage === "done" && (
+          <div style={{ padding: 20, textAlign: "center" }}>
+            <I.Check size={32}/>
+            <div style={{ marginTop: 8, fontSize: 14 }}>密码重置成功,正在跳转登录…</div>
+          </div>
+        )}
+
+        <div className="auth-foot">
+          <a href="login.html">返回登录</a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<ToastProvider><ForgotPage/></ToastProvider>);
+</script>
+</body>
+</html>

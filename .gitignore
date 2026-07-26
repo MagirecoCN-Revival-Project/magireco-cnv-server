@@ -1,0 +1,32 @@
+# 编译产物
+bin/
+*.test
+*.out
+# go build ./cmd/<name> 在仓库根直接产出的二进制
+/node
+/panel
+/admintool
+
+# 配置 / 运行时
+# 任意路径下以 .env 结尾的文件一律忽略,防止边缘节点配置(deploy/install.sh
+# 部署到 /etc/magireco/node-edge.env)或其它本地 secret 被误提交。
+# *.env.example 是模板,显式留下来。
+.env
+.env.local
+*.env
+!*.env.example
+# 部署运行时数据目录,deploy/install.sh 落到 /etc/magireco/ 与 /var/lib/magireco/,
+# 仓库根理论上不会出现,但万一手动复制进来也一并忽略。
+/data/
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/

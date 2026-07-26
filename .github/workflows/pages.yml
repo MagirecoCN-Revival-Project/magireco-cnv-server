@@ -1,0 +1,181 @@
+name: 📚 构建并部署文档站
+
+# ╔════════════════════════════════════════════════════════════════════╗
+# ║   magirecocn-resource-server  ——  VitePress 文档站构建与部署        ║
+# ╠════════════════════════════════════════════════════════════════════╣
+# ║                                                                    ║
+# ║ 用途                                                                ║
+# ║ ───                                                                ║
+# ║   把 docs/ 下的 VitePress 文档站编译为静态产物,经 GitHub Actions   ║
+# ║   部署到 GitHub Pages。本工作流显式接管 GitHub 自动注入的隐式      ║
+# ║   "pages build and deployment" 流程,使整个构建过程可控、可审计。  ║
+# ║                                                                    ║
+# ║ 触发                                                                ║
+# ║ ───                                                                ║
+# ║   ▸ push 到 main 且改动了 docs/** 时自动触发                       ║
+# ║   ▸ 手动 workflow_dispatch                                          ║
+# ║                                                                    ║
+# ║ 前置条件                                                            ║
+# ║ ──────                                                             ║
+# ║   ▸ 仓库 Settings → Pages → Source 须设为 "GitHub Actions"         ║
+# ║     (切换为 Actions 后,GitHub 自动注入的隐式 Pages 流程即消失,    ║
+# ║      改由本工作流接管)                                             ║
+# ║   ▸ 文档站 base 路径在 docs/.vitepress/config.mts 中已配置为       ║
+# ║     /server/(对应 docs.magireco.top/server 子路径部署)            ║
+# ║                                                                    ║
+# ╚════════════════════════════════════════════════════════════════════╝
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+# Pages 部署最佳实践:同组串行,且不取消进行中的部署(避免发布到一半被打断)
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  REPO: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🛡️ 安全护栏(校验仓库白名单)
+        # 硬刹车——确保本 workflow 只在预期仓库内运行,防止 fork 或误配置
+        run: |
+          python3 <<'SCRIPT_END'
+          import os, sys
+
+          ALLOWED = {"MagirecoCN-Revival-Project/magirecocn-resource-server"}
+          repo = os.environ.get("REPO", "")
+
+          if repo not in ALLOWED:
+              print(f"::error::仓库 {repo!r} 不在白名单中")
+              print(f"::error::允许: {sorted(ALLOWED)}")
+              print("::error::如需在其他仓库使用,请修改白名单(.github/workflows/pages.yml)")
+              sys.exit(1)
+
+          print(f"✔ 仓库校验通过: {repo}")
+          SCRIPT_END
+
+      - name: 📦 检出仓库
+        uses: actions/checkout@v4
+
+      - name: ⬢ 设置 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: ⚙️ 配置 GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: 🏗️ 安装依赖并构建 VitePress
+        run: |
+          python3 <<'SCRIPT_END'
+          import os, subprocess, sys
+
+          sys.stdout.reconfigure(line_buffering=True)
+
+          class C:
+              RESET         = "\033[0m"
+              BOLD          = "\033[1m"
+              RED           = "\033[31m"
+              BRIGHT_GREEN  = "\033[92m"
+              BRIGHT_YELLOW = "\033[93m"
+              BRIGHT_BLUE   = "\033[94m"
+              BRIGHT_WHITE  = "\033[97m"
+              CYAN          = "\033[36m"
+
+          def c(color, text): return f"{color}{text}{C.RESET}"
+          def header(text):
+              bar = "═" * 60
+              print(f"\n{c(C.BOLD + C.BRIGHT_BLUE, bar)}")
+              print(c(C.BOLD + C.BRIGHT_WHITE, f"  {text}"))
+              print(f"{c(C.BOLD + C.BRIGHT_BLUE, bar)}\n", flush=True)
+          def section(text): print(f"\n{c(C.BOLD + C.CYAN, '┌─ ' + text)}", flush=True)
+          def info(t):  print(f"  {c(C.BRIGHT_BLUE,  'ℹ')} {t}", flush=True)
+          def ok(t):    print(f"  {c(C.BRIGHT_GREEN, '✔')} {t}", flush=True)
+          def err(t):   print(f"  {c(C.RED,          '✘')} {t}", flush=True)
+
+          def run(cmd, **kw):
+              info(f"$ {cmd}")
+              r = subprocess.run(cmd, shell=True, **kw)
+              if r.returncode != 0:
+                  err(f"命令失败 (exit={r.returncode}): {cmd}")
+                  sys.exit(r.returncode)
+
+          header("构建 VitePress 文档站")
+
+          section("npm ci(docs/)")
+          run("npm ci", cwd="docs")
+          ok("依赖已安装")
+
+          section("npm run docs:build")
+          run("npm run docs:build", cwd="docs")
+
+          out = "docs/.vitepress/dist"
+          if not os.path.isdir(out):
+              err(f"未找到构建产物目录 {out}")
+              sys.exit(1)
+          total = sum(len(files) for _, _, files in os.walk(out))
+          ok(f"构建完成,产物目录 {out} 共 {total} 个文件")
+          SCRIPT_END
+
+      - name: ⬆️ 上传 Pages 产物
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/.vitepress/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 🚀 部署到 GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: 📊 生成部署报告(Job Summary)
+        if: always()
+        run: |
+          python3 <<'SCRIPT_END'
+          import os
+
+          summary_f = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/null")
+          url        = os.environ.get("PAGE_URL", "")
+          event      = os.environ.get("GITHUB_EVENT_NAME", "")
+          commit_sha = os.environ.get("GITHUB_SHA", "unknown")[:7]
+
+          status = "✅ 文档站部署成功" if url else "⚠️ 部署完成(未取得 Pages URL)"
+
+          lines = [
+              f"## {status}",
+              "",
+              "| 字段 | 值 |",
+              "|------|-----|",
+              f"| 部署地址 | {url or '—'} |",
+              f"| 触发方式 | {event} |",
+              f"| 源码提交 | `{commit_sha}` |",
+              "",
+          ]
+          with open(summary_f, "w", encoding="utf-8") as f:
+              f.write("\n".join(lines))
+          SCRIPT_END
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+
+# ci-trigger: 2026-06-01T12:35:15Z

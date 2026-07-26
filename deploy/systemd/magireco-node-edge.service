@@ -1,0 +1,37 @@
+# 边缘节点。配置全部由 /etc/magireco/node-edge.env 决定;deploy/install.sh
+# 会从 deploy/edge.env.example 复制一份并按问答填好关键字段。
+#
+# 边缘节点不连业务 DB、不持游戏数据,只分发资源 + 与面板维持管控 WS。
+
+[Unit]
+Description=Magireco Revival Edge Node
+Documentation=https://github.com/MagirecoCN-Revival-Project/magirecocn-resource-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=magireco
+Group=magireco
+WorkingDirectory=/var/lib/magireco/node-edge
+EnvironmentFile=/etc/magireco/node-edge.env
+ExecStart=/opt/magireco/node-edge/bin/magireco-node
+Restart=on-failure
+RestartSec=5s
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/magireco/node-edge /var/log/magireco
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+StandardOutput=append:/var/log/magireco/node-edge.log
+StandardError=append:/var/log/magireco/node-edge.log
+
+[Install]
+WantedBy=multi-user.target

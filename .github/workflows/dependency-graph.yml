@@ -1,0 +1,107 @@
+name: 📊 提交依赖图谱
+
+# ╔════════════════════════════════════════════════════════════════════╗
+# ║   magirecocn-resource-server  ——  Go 依赖图谱提交                   ║
+# ╠════════════════════════════════════════════════════════════════════╣
+# ║                                                                    ║
+# ║ 用途                                                                ║
+# ║ ───                                                                ║
+# ║   解析 go.mod 完整依赖树(含传递依赖),通过 Dependency Submission  ║
+# ║   API 上报到 GitHub 的依赖图谱(Dependency Graph)。本工作流显式    ║
+# ║   接管 GitHub 自动注入的隐式 "Dependency Graph" 流程,使其:        ║
+# ║     ▸ 覆盖 go.sum 之外的间接依赖,Dependabot 告警更完整            ║
+# ║     ▸ 何时上报、上报哪些目标完全可控、可审计                       ║
+# ║                                                                    ║
+# ║ 触发                                                                ║
+# ║ ───                                                                ║
+# ║   ▸ push 到 main 且改动了 go.mod / go.sum 时自动触发               ║
+# ║   ▸ 每周一 UTC 18:00(北京时间周二 02:00)定时刷新                 ║
+# ║   ▸ 手动 workflow_dispatch                                          ║
+# ║                                                                    ║
+# ╚════════════════════════════════════════════════════════════════════╝
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/dependency-graph.yml'
+  schedule:
+    - cron: '0 18 * * 1'   # 每周一 UTC 18:00 ≈ 北京时间周二 02:00
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # 向 Dependency Submission API 上报快照需要 contents:write
+
+env:
+  REPO: ${{ github.repository }}
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🛡️ 安全护栏(校验仓库白名单)
+        # 硬刹车——确保本 workflow 只在预期仓库内运行,防止 fork 或误配置
+        run: |
+          python3 <<'SCRIPT_END'
+          import os, sys
+
+          ALLOWED = {"MagirecoCN-Revival-Project/magirecocn-resource-server"}
+          repo = os.environ.get("REPO", "")
+
+          if repo not in ALLOWED:
+              print(f"::error::仓库 {repo!r} 不在白名单中")
+              print(f"::error::允许: {sorted(ALLOWED)}")
+              print("::error::如需在其他仓库使用,请修改白名单(.github/workflows/dependency-graph.yml)")
+              sys.exit(1)
+
+          print(f"✔ 仓库校验通过: {repo}")
+          SCRIPT_END
+
+      - name: 📦 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 🐹 设置 Go 1.25
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: 📊 计算并提交 Go 依赖图谱
+        uses: actions/go-dependency-submission@v2
+        with:
+          go-mod-path: go.mod
+
+      - name: 📊 生成提交报告(Job Summary)
+        if: always()
+        run: |
+          python3 <<'SCRIPT_END'
+          import os
+
+          summary_f  = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/null")
+          event      = os.environ.get("GITHUB_EVENT_NAME", "")
+          commit_sha = os.environ.get("GITHUB_SHA", "unknown")[:7]
+          repo       = os.environ.get("REPO", "")
+
+          lines = [
+              "## 📊 依赖图谱已提交",
+              "",
+              "| 字段 | 值 |",
+              "|------|-----|",
+              f"| 模块 | `go.mod` |",
+              f"| 触发方式 | {event} |",
+              f"| 源码提交 | `{commit_sha}` |",
+              "",
+              f"前往 [依赖图谱](https://github.com/{repo}/network/dependencies) 查看上报结果。",
+              "",
+          ]
+          with open(summary_f, "w", encoding="utf-8") as f:
+              f.write("\n".join(lines))
+          SCRIPT_END
+
+# ci-trigger: 2026-06-01T12:35:15Z

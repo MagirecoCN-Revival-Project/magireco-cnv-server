@@ -1,0 +1,773 @@
+name: 🛠️ 构建并发布服务端
+
+# ╔════════════════════════════════════════════════════════════════════╗
+# ║   magirecocn-resource-server  ——  服务端构建与发布                 ║
+# ╠════════════════════════════════════════════════════════════════════╣
+# ║                                                                    ║
+# ║ 版本规则                                                            ║
+# ║ ───────                                                            ║
+# ║   ▸ 每次 push 自动触发:修订号(patch)+1,VersionCode +1            ║
+# ║   ▸ 手动触发(workflow_dispatch,不勾选特殊选项):                   ║
+# ║       次版本号(minor)+1,修订号归零,VersionCode +1                ║
+# ║   ▸ 手动触发(勾选 bump_major):                                     ║
+# ║       主版本号(major)+1,次版本号与修订号归零,VersionCode +1       ║
+# ║                                                                    ║
+# ║ 构建流程                                                            ║
+# ║ ───────                                                            ║
+# ║   1. 读取 GitHub Variables 中的当前版本,按规则计算新版本           ║
+# ║   2. go vet + go test -race                                        ║
+# ║   3. 交叉编译 node / panel / admintool                             ║
+# ║      到 linux/amd64 + linux/arm64 共 6 个二进制                    ║
+# ║   4. 打包 web/ 为 web-static.tar.gz                                ║
+# ║   5. 生成 SHA256SUMS.txt                                           ║
+# ║   6. 创建 GitHub Release,上传所有产物                              ║
+# ║   7. 将新版本号保存回 GitHub Variables                              ║
+# ║                                                                    ║
+# ║ 所需 Secrets                                                        ║
+# ║ ──────────                                                         ║
+# ║   GH_TOKEN          — 有 contents:write + variables:write 权限的   ║
+# ║                        Personal Access Token(可选,缺失时回落到     ║
+# ║                        内置 GITHUB_TOKEN,但 Variables 写入可能     ║
+# ║                        被组织策略拒绝)                              ║
+# ║                                                                    ║
+# ║ 所需 Variables(首次运行会自动从 1.0.0 / VersionCode=1 开始)        ║
+# ║   SERVER_VERSION       — 当前版本号,如 "1.0.0"                     ║
+# ║   SERVER_VERSION_CODE  — 当前 VersionCode 整数                     ║
+# ║                                                                    ║
+# ╚════════════════════════════════════════════════════════════════════╝
+
+on:
+  push:
+    branches: [main]
+    # 纯文档 / CI / Agent 配置改动不产出新二进制,跳过自动发版,避免空发 Release。
+    # （pages.yml 仍会照常部署文档站,不受影响。）
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/**'
+      - '.claude/**'
+      - 'LICENSE'
+      - '.gitignore'
+  workflow_dispatch:
+    inputs:
+      bump_major:
+        description: '大版本升级(主版本号+1,次版本号与修订号归零)'
+        required: false
+        default: 'false'
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  actions: write    # 允许 GITHUB_TOKEN 读写 Actions Variables(版本号持久化)
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUNBUFFERED: "1"
+      GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+      REPO: ${{ github.repository }}
+
+    steps:
+      - name: 🛡️ 安全护栏(校验仓库白名单)
+        # 硬刹车——确保本 workflow 只在预期仓库内运行,防止 fork 或误配置
+        # 触发非预期仓库时立即 fail-fast,不向外部发送任何请求。
+        run: |
+          python3 <<'SCRIPT_END'
+          import os, sys
+
+          ALLOWED = {"MagirecoCN-Revival-Project/magirecocn-resource-server"}
+          repo = os.environ.get("REPO", "")
+
+          if repo not in ALLOWED:
+              print(f"::error::仓库 {repo!r} 不在白名单中")
+              print(f"::error::允许: {sorted(ALLOWED)}")
+              print("::error::如需在其他仓库使用,请修改白名单(.github/workflows/build.yml)")
+              sys.exit(1)
+
+          print(f"✔ 仓库校验通过: {repo}")
+          SCRIPT_END
+
+      - name: 🔑 验证访问令牌
+        run: |
+          python3 <<'SCRIPT_END'
+          import json, urllib.request, urllib.error, os, sys
+
+          sys.stdout.reconfigure(line_buffering=True)
+
+          class C:
+              RESET         = "\033[0m"
+              BOLD          = "\033[1m"
+              RED           = "\033[31m"
+              BRIGHT_GREEN  = "\033[92m"
+              BRIGHT_YELLOW = "\033[93m"
+              BRIGHT_BLUE   = "\033[94m"
+              BRIGHT_WHITE  = "\033[97m"
+              CYAN          = "\033[36m"
+
+          def c(color, text): return f"{color}{text}{C.RESET}"
+          def ok(t):   print(f"  {c(C.BRIGHT_GREEN,  '✔')} {t}", flush=True)
+          def warn(t): print(f"  {c(C.BRIGHT_YELLOW, '⚠')} {t}", flush=True)
+          def err(t):  print(f"  {c(C.RED,           '✘')} {t}", flush=True)
+
+          token = os.environ.get("GH_TOKEN", "")
+          repo  = os.environ.get("REPO", "")
+
+          if not token:
+              err("GH_TOKEN 为空,无法访问仓库")
+              sys.exit(1)
+
+          # 令牌来源诊断
+          if token.startswith("ghs_"):
+              warn("当前令牌为内置 GITHUB_TOKEN(ghs_…),非 PAT")
+              warn("组织仓库可能因策略限制导致后续步骤出现 403")
+              warn("强烈建议:将 PAT 存入 Secrets(而非 Variables)")
+              warn("  路径:Settings → Secrets and variables → Actions → Secrets")
+              warn("  新建 Secret:Name=GH_TOKEN,Value=<PAT>(需 repo + workflow scope)")
+          elif token.startswith("ghp_") or token.startswith("github_pat_"):
+              ok("使用 PAT(secrets.GH_TOKEN)")
+          else:
+              warn(f"令牌格式未知(前缀 {token[:8]}…)")
+
+          # 测试令牌是否可读取目标仓库
+          url = f"https://api.github.com/repos/{repo}"
+          req = urllib.request.Request(url, headers={
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+          })
+          try:
+              with urllib.request.urlopen(req) as resp:
+                  data = json.loads(resp.read())
+                  ok(f"API 验证通过:{data.get('full_name')}({'私有' if data.get('private') else '公开'}仓库)")
+          except urllib.error.HTTPError as e:
+              body = e.read().decode(errors="replace")
+              err(f"令牌无法访问仓库 API(HTTP {e.code})")
+              err(f"响应:{body[:200]}")
+              if e.code in (401, 403):
+                  if token.startswith("ghs_"):
+                      err("内置 GITHUB_TOKEN 被组织策略拒绝")
+                      err("必须将 PAT 配置到 Secrets → GH_TOKEN 才能继续")
+                  else:
+                      err("PAT 权限不足或已过期,请检查 secrets.GH_TOKEN")
+              sys.exit(1)
+          SCRIPT_END
+
+      - name: 📦 检出仓库
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_TOKEN || github.token }}
+          fetch-depth: 0   # 让 git describe / compare 可用
+
+      - name: 🔢 计算新版本号
+        id: version
+        run: |
+          python3 <<'SCRIPT_END'
+          import os, sys
+
+          sys.stdout.reconfigure(line_buffering=True)
+
+          class C:
+              RESET         = "\033[0m"
+              BOLD          = "\033[1m"
+              DIM           = "\033[2m"
+              RED           = "\033[31m"
+              BRIGHT_GREEN  = "\033[92m"
+              BRIGHT_YELLOW = "\033[93m"
+              BRIGHT_BLUE   = "\033[94m"
+              BRIGHT_CYAN   = "\033[96m"
+              BRIGHT_WHITE  = "\033[97m"
+              CYAN          = "\033[36m"
+
+          def c(color, text): return f"{color}{text}{C.RESET}"
+          def header(text):
+              bar = "═" * 60
+              print(f"\n{c(C.BOLD + C.BRIGHT_BLUE, bar)}")
+              print(c(C.BOLD + C.BRIGHT_WHITE, f"  {text}"))
+              print(f"{c(C.BOLD + C.BRIGHT_BLUE, bar)}\n", flush=True)
+          def section(text): print(f"\n{c(C.BOLD + C.CYAN, '┌─ ' + text)}", flush=True)
+          def info(t):  print(f"  {c(C.BRIGHT_BLUE,   'ℹ')} {t}", flush=True)
+          def ok(t):    print(f"  {c(C.BRIGHT_GREEN,  '✔')} {t}", flush=True)
+          def warn(t):  print(f"  {c(C.BRIGHT_YELLOW, '⚠')} {t}", flush=True)
+
+          def set_output(key, value):
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write(f"{key}={value}\n")
+
+          def get_variable(repo, name, token, default=""):
+              """直接调用 GitHub REST API 读取仓库变量,不依赖 gh CLI 的权限配置。"""
+              import json, urllib.request, urllib.error
+              headers = {
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              }
+              url = f"https://api.github.com/repos/{repo}/actions/variables/{name}"
+              try:
+                  with urllib.request.urlopen(
+                      urllib.request.Request(url, headers=headers)
+                  ) as resp:
+                      return json.loads(resp.read()).get("value", default)
+              except Exception:
+                  return default
+
+          header("计算新版本号")
+
+          event_name = os.environ.get("GITHUB_EVENT_NAME", "push")
+          bump_major = os.environ.get("INPUT_BUMP_MAJOR", "false").lower() == "true"
+          repo       = os.environ["REPO"]
+          token      = os.environ.get("GH_TOKEN", "")
+
+          section("读取当前版本(GitHub Variables REST API)")
+          cur_version = get_variable(repo, "SERVER_VERSION",      token, "1.0.0")
+          cur_code    = int(get_variable(repo, "SERVER_VERSION_CODE", token, "1") or "1")
+          info(f"当前版本:  {c(C.BRIGHT_CYAN, cur_version)}")
+          info(f"当前 VersionCode: {c(C.BRIGHT_CYAN, str(cur_code))}")
+
+          parts = cur_version.split(".")
+          if len(parts) != 3 or not all(p.isdigit() for p in parts):
+              warn(f"版本格式异常 '{cur_version}',重置为 1.0.0")
+              parts = ["1", "0", "0"]
+          major, minor, patch = int(parts[0]), int(parts[1]), int(parts[2])
+
+          section("计算版本增量")
+          if event_name == "push":
+              patch += 1
+              mode = "patch +1(自动构建·push 触发)"
+          elif bump_major:
+              major += 1
+              minor  = 0
+              patch  = 0
+              mode   = "major +1(手动大版本升级)"
+          else:
+              minor += 1
+              patch  = 0
+              mode   = "minor +1(手动构建)"
+
+          new_code    = cur_code + 1
+          new_version = f"{major}.{minor}.{patch}"
+          tag_name    = f"v{new_version}"
+
+          ok(f"升级模式:   {mode}")
+          ok(f"新版本号:   {c(C.BRIGHT_GREEN, new_version)}")
+          ok(f"新 VersionCode: {c(C.BRIGHT_GREEN, str(new_code))}")
+          ok(f"Release 标签:   {c(C.BRIGHT_GREEN, tag_name)}")
+
+          set_output("new_version", new_version)
+          set_output("new_code",    str(new_code))
+          set_output("tag_name",    tag_name)
+          SCRIPT_END
+        env:
+          INPUT_BUMP_MAJOR: ${{ inputs.bump_major }}
+
+      - name: 🐹 设置 Go 1.25
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: 🔬 静态检查与单元测试
+        run: |
+          python3 <<'SCRIPT_END'
+          import os, subprocess, sys
+
+          sys.stdout.reconfigure(line_buffering=True)
+
+          class C:
+              RESET         = "\033[0m"
+              BOLD          = "\033[1m"
+              RED           = "\033[31m"
+              BRIGHT_GREEN  = "\033[92m"
+              BRIGHT_YELLOW = "\033[93m"
+              BRIGHT_BLUE   = "\033[94m"
+              BRIGHT_WHITE  = "\033[97m"
+              CYAN          = "\033[36m"
+
+          def c(color, text): return f"{color}{text}{C.RESET}"
+          def header(text):
+              bar = "═" * 60
+              print(f"\n{c(C.BOLD + C.BRIGHT_BLUE, bar)}")
+              print(c(C.BOLD + C.BRIGHT_WHITE, f"  {text}"))
+              print(f"{c(C.BOLD + C.BRIGHT_BLUE, bar)}\n", flush=True)
+          def section(text): print(f"\n{c(C.BOLD + C.CYAN, '┌─ ' + text)}", flush=True)
+          def info(t):  print(f"  {c(C.BRIGHT_BLUE,  'ℹ')} {t}", flush=True)
+          def ok(t):    print(f"  {c(C.BRIGHT_GREEN, '✔')} {t}", flush=True)
+          def err(t):   print(f"  {c(C.RED,          '✘')} {t}", flush=True)
+
+          def run(cmd, **kw):
+              info(f"$ {cmd}")
+              r = subprocess.run(cmd, shell=True, **kw)
+              if r.returncode != 0:
+                  err(f"命令失败 (exit={r.returncode}): {cmd}")
+                  sys.exit(r.returncode)
+
+          header("静态检查与单元测试")
+
+          section("go mod download")
+          run("go mod download", env={**os.environ, "CGO_ENABLED": "0"})
+          ok("依赖已就绪")
+
+          section("go vet ./...")
+          run("go vet ./...", env={**os.environ, "CGO_ENABLED": "0"})
+          ok("vet 通过")
+
+          section("go test -race -count=1 ./...")
+          # -race 需要 CGO(go race detector 依赖 libc 拦截内存访问)。
+          # 跑测试时启用 CGO 不影响真正的发布构建 —— 后面交叉编译那一步会把
+          # CGO_ENABLED 再设回 0,产出的二进制仍然是纯静态。
+          # modernc.org/sqlite 在 CGO=0 和 CGO=1 下都能跑,所以两路都安全。
+          run("go test -race -count=1 ./...", env={**os.environ, "CGO_ENABLED": "1"})
+          ok("全部测试通过")
+          SCRIPT_END
+
+      - name: 🏗️ 交叉编译二进制
+        id: build
+        run: |
+          python3 <<'SCRIPT_END'
+          import os, subprocess, sys
+
+          sys.stdout.reconfigure(line_buffering=True)
+
+          class C:
+              RESET         = "\033[0m"
+              BOLD          = "\033[1m"
+              RED           = "\033[31m"
+              BRIGHT_GREEN  = "\033[92m"
+              BRIGHT_YELLOW = "\033[93m"
+              BRIGHT_BLUE   = "\033[94m"
+              BRIGHT_CYAN   = "\033[96m"
+              BRIGHT_WHITE  = "\033[97m"
+              CYAN          = "\033[36m"
+
+          def c(color, text): return f"{color}{text}{C.RESET}"
+          def header(text):
+              bar = "═" * 60
+              print(f"\n{c(C.BOLD + C.BRIGHT_BLUE, bar)}")
+              print(c(C.BOLD + C.BRIGHT_WHITE, f"  {text}"))
+              print(f"{c(C.BOLD + C.BRIGHT_BLUE, bar)}\n", flush=True)
+          def section(text): print(f"\n{c(C.BOLD + C.CYAN, '┌─ ' + text)}", flush=True)
+          def info(t):  print(f"  {c(C.BRIGHT_BLUE,  'ℹ')} {t}", flush=True)
+          def ok(t):    print(f"  {c(C.BRIGHT_GREEN, '✔')} {t}", flush=True)
+          def warn(t):  print(f"  {c(C.BRIGHT_YELLOW,'⚠')} {t}", flush=True)
+          def err(t):   print(f"  {c(C.RED,          '✘')} {t}", flush=True)
+
+          def set_output(key, value):
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write(f"{key}={value}\n")
+
+          def run(cmd, **kw):
+              info(f"$ {cmd}")
+              r = subprocess.run(cmd, shell=True, **kw)
+              if r.returncode != 0:
+                  err(f"命令失败 (exit={r.returncode}): {cmd}")
+                  sys.exit(r.returncode)
+
+          header("交叉编译")
+
+          new_version = os.environ["NEW_VERSION"]
+          new_code    = os.environ["NEW_CODE"]
+          commit_sha  = os.environ.get("GITHUB_SHA", "unknown")[:7]
+          ldflags     = (
+              f"-s -w "
+              f"-X main.version={new_version} "
+              f"-X main.versionCode={new_code} "
+              f"-X main.commit={commit_sha}"
+          )
+
+          targets = [
+              ("node",       "linux", "amd64"),
+              ("node",       "linux", "arm64"),
+              ("panel",      "linux", "amd64"),
+              ("panel",      "linux", "arm64"),
+              ("admintool",  "linux", "amd64"),
+              ("admintool",  "linux", "arm64"),
+          ]
+
+          os.makedirs("dist", exist_ok=True)
+          binaries = []
+          for cmd, goos, goarch in targets:
+              out = f"dist/magireco-{cmd}-{goos}-{goarch}"
+              section(f"build {cmd} ({goos}/{goarch})")
+              env = {
+                  **os.environ,
+                  "GOOS":       goos,
+                  "GOARCH":     goarch,
+                  "CGO_ENABLED": "0",
+              }
+              run(
+                  f'go build -trimpath -ldflags "{ldflags}" -o "{out}" ./cmd/{cmd}',
+                  env=env,
+              )
+              size = os.path.getsize(out)
+              ok(f"{out} ({size/1024/1024:.1f} MB)")
+              binaries.append(out)
+
+          section("打包前端静态资源")
+          tarball = "dist/web-static.tar.gz"
+          run(f'tar -czf "{tarball}" web')
+          ok(f"{tarball} ({os.path.getsize(tarball)/1024/1024:.1f} MB)")
+
+          section("生成 SHA256SUMS.txt")
+          # 把 SHA256SUMS.txt 也放进 dist/,但生成时排除它自己
+          run('cd dist && find . -type f ! -name SHA256SUMS.txt -printf "%P\\n" '
+              '| sort | xargs sha256sum > SHA256SUMS.txt')
+          with open("dist/SHA256SUMS.txt") as f:
+              for line in f:
+                  info(line.rstrip())
+
+          set_output("dist_dir", "dist")
+          ok(f"共 {len(binaries)+2} 个产物已就绪")
+          SCRIPT_END
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new_version }}
+          NEW_CODE:    ${{ steps.version.outputs.new_code }}
+
+      - name: 🚀 发布到 GitHub Release
+        run: |
+          python3 <<'SCRIPT_END'
+          import os, subprocess, sys, json, urllib.request, glob
+
+          sys.stdout.reconfigure(line_buffering=True)
+
+          class C:
+              RESET         = "\033[0m"
+              BOLD          = "\033[1m"
+              RED           = "\033[31m"
+              BRIGHT_GREEN  = "\033[92m"
+              BRIGHT_YELLOW = "\033[93m"
+              BRIGHT_BLUE   = "\033[94m"
+              BRIGHT_WHITE  = "\033[97m"
+              CYAN          = "\033[36m"
+
+          def c(color, text): return f"{color}{text}{C.RESET}"
+          def header(text):
+              bar = "═" * 60
+              print(f"\n{c(C.BOLD + C.BRIGHT_BLUE, bar)}")
+              print(c(C.BOLD + C.BRIGHT_WHITE, f"  {text}"))
+              print(f"{c(C.BOLD + C.BRIGHT_BLUE, bar)}\n", flush=True)
+          def section(text): print(f"\n{c(C.BOLD + C.CYAN, '┌─ ' + text)}", flush=True)
+          def info(t):  print(f"  {c(C.BRIGHT_BLUE,   'ℹ')} {t}", flush=True)
+          def ok(t):    print(f"  {c(C.BRIGHT_GREEN,  '✔')} {t}", flush=True)
+          def warn(t):  print(f"  {c(C.BRIGHT_YELLOW, '⚠')} {t}", flush=True)
+          def err(t):   print(f"  {c(C.RED,           '✘')} {t}", flush=True)
+
+          def run(cmd, **kw):
+              r = subprocess.run(cmd, shell=True, capture_output=True, text=True, **kw)
+              return r
+
+          header("发布到 GitHub Release")
+
+          tag_name        = os.environ["TAG_NAME"]
+          new_version     = os.environ["NEW_VERSION"]
+          new_code        = os.environ["NEW_CODE"]
+          repo            = os.environ["REPO"]
+          token           = os.environ.get("GH_TOKEN", "")
+          event_name      = os.environ.get("GITHUB_EVENT_NAME", "push")
+          bump_major      = os.environ.get("INPUT_BUMP_MAJOR", "false").lower() == "true"
+          commit_sha_full = os.environ.get("GITHUB_SHA", "unknown")
+          commit_sha      = commit_sha_full[:7]
+
+          if event_name == "push":
+              trigger_note = "自动构建(push 触发)"
+          elif bump_major:
+              trigger_note = "手动大版本升级"
+          else:
+              trigger_note = "手动构建"
+
+          # ── 查询上次同类型 Release 标签(push→Pre-release,手动→Release)──
+          is_prerelease = (event_name == "push")
+          last_tag = None
+          section("查询上次同类型 Release")
+          try:
+              api_url = f"https://api.github.com/repos/{repo}/releases?per_page=100"
+              req = urllib.request.Request(api_url, headers={
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              })
+              with urllib.request.urlopen(req) as resp:
+                  for rel in json.loads(resp.read()):
+                      if rel.get("draft"):
+                          continue
+                      if rel.get("prerelease") == is_prerelease:
+                          last_tag = rel["tag_name"]
+                          break
+              if last_tag:
+                  info(f"上次{'预发布' if is_prerelease else '正式发布'}: {last_tag}")
+              else:
+                  info("未找到同类型历史 Release,标注为首次发布")
+          except Exception as e:
+              warn(f"查询历史 Release 失败: {e}")
+
+          # ── 获取自上次 Release 以来的提交记录(GitHub Compare API)────
+          change_lines = []
+          if last_tag:
+              try:
+                  cmp_url = (f"https://api.github.com/repos/{repo}/compare"
+                             f"/{last_tag}...{commit_sha_full}")
+                  req = urllib.request.Request(cmp_url, headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  })
+                  with urllib.request.urlopen(req) as resp:
+                      data = json.loads(resp.read())
+                  commits = data.get("commits", [])
+                  total   = data.get("total_commits", len(commits))
+                  MAX_SHOW = 50
+                  for cmt in commits[:MAX_SHOW]:
+                      first_line = cmt["commit"]["message"].splitlines()[0]
+                      sha7       = cmt["sha"][:7]
+                      change_lines.append(f"- {first_line} (`{sha7}`)")
+                  if total > MAX_SHOW:
+                      change_lines.append(f"- ……共 {total} 条,仅显示前 {MAX_SHOW} 条")
+                  if not change_lines:
+                      change_lines = ["- 无新提交"]
+                  ok(f"自 {last_tag} 以来共 {total} 条提交")
+              except Exception as e:
+                  warn(f"获取提交记录失败: {e}")
+                  change_lines = ["- 无法获取提交记录"]
+          else:
+              change_lines = ["- 首次发布"]
+
+          changes_section = ["### 功能更改", ""] + change_lines + [""]
+
+          # ── 收集要上传的资产 ──────────────────────────────────────────
+          assets = sorted(glob.glob("dist/*"))
+          section("待上传资产")
+          for a in assets:
+              info(f"{a} ({os.path.getsize(a)/1024/1024:.2f} MB)")
+
+          # ── 构建 Release 描述 ─────────────────────────────────────────
+          release_notes = "\n".join([
+              f"## 魔法纪录复兴计划 · 服务端 {new_version}",
+              "",
+              f"| 字段 | 值 |",
+              f"|------|-----|",
+              f"| 版本号 | `{new_version}` |",
+              f"| VersionCode | `{new_code}` |",
+              f"| 构建方式 | {trigger_note} |",
+              f"| 源码提交 | `{commit_sha}` |",
+              "",
+              *changes_section,
+              "### 资产",
+              "- `magireco-node-linux-{amd64,arm64}` — 业务/边缘节点（CNV_NODE_ROLE=business|edge）",
+              "- `magireco-panel-linux-{amd64,arm64}` — 管理面板（监控节点 + 节点注册表）",
+              "- `magireco-admintool-linux-{amd64,arm64}` — 运维 CLI（引导账号 / 目录签名）",
+              "- `web-static.tar.gz` — 前端静态目录",
+              "- `SHA256SUMS.txt` — 校验清单",
+              "",
+              "### 快速部署",
+              "1. 选择目标架构的二进制下载并赋予可执行权限",
+              "2. 准备好数据库与 `CNV_DB_URL`、`CNV_ADMIN_JWT_SECRET` 等环境变量（详见 README.md）",
+              "3. `./magireco-node` 启动业务节点（首次启动自动生成节点密钥并打印）",
+              "4. `./magireco-panel` 启动面板（先访问 /api/panel/setup 初始化面板管理员，再在面板 UI 填入节点密钥）",
+              "5. `./magireco-admintool create-admin` 引导第一个游戏超管账号",
+          ])
+
+          # push 自动触发 → Pre-release;手动触发 → 正式 Release
+          prerelease_flag = "--prerelease" if event_name == "push" else ""
+
+          notes_file = "/tmp/release_notes.md"
+          with open(notes_file, "w", encoding="utf-8") as nf:
+              nf.write(release_notes)
+
+          section(f"创建 Release {tag_name}{'(预发布)' if prerelease_flag else '(正式发布)'}")
+          r = run(
+              f'gh release create "{tag_name}" '
+              f'--title "魔法纪录复兴计划服务端 {new_version}" '
+              f'--notes-file "{notes_file}" '
+              f'{prerelease_flag} '
+              f'--repo "{repo}"'
+          )
+          if r.returncode != 0:
+              if "already exists" in r.stderr or "already_exists" in r.stderr:
+                  warn(f"Release {tag_name} 已存在,继续上传产物")
+              else:
+                  err(f"创建 Release 失败:\n{r.stderr}")
+                  sys.exit(1)
+          else:
+              ok(f"Release {tag_name} 已创建")
+
+          section("上传产物")
+          assets_arg = " ".join(f'"{a}"' for a in assets)
+          r = run(
+              f'gh release upload "{tag_name}" {assets_arg} '
+              f'--clobber --repo "{repo}"'
+          )
+          if r.returncode != 0:
+              err(f"上传产物失败:\n{r.stderr}")
+              sys.exit(1)
+          ok(f"已上传 {len(assets)} 个文件")
+          SCRIPT_END
+        env:
+          # 覆盖 job 级 GH_TOKEN,Release 创建强制用 github-actions[bot] 身份
+          GH_TOKEN:         ${{ github.token }}
+          TAG_NAME:         ${{ steps.version.outputs.tag_name }}
+          NEW_VERSION:      ${{ steps.version.outputs.new_version }}
+          NEW_CODE:         ${{ steps.version.outputs.new_code }}
+          INPUT_BUMP_MAJOR: ${{ inputs.bump_major }}
+
+      - name: 💾 保存新版本号到 GitHub Variables
+        run: |
+          python3 <<'SCRIPT_END'
+          import json, urllib.request, urllib.error, os, sys
+
+          sys.stdout.reconfigure(line_buffering=True)
+
+          class C:
+              RESET         = "\033[0m"
+              BOLD          = "\033[1m"
+              RED           = "\033[31m"
+              BRIGHT_GREEN  = "\033[92m"
+              BRIGHT_YELLOW = "\033[93m"
+              BRIGHT_BLUE   = "\033[94m"
+              BRIGHT_WHITE  = "\033[97m"
+              CYAN          = "\033[36m"
+
+          def c(color, text): return f"{color}{text}{C.RESET}"
+          def header(text):
+              bar = "═" * 60
+              print(f"\n{c(C.BOLD + C.BRIGHT_BLUE, bar)}")
+              print(c(C.BOLD + C.BRIGHT_WHITE, f"  {text}"))
+              print(f"{c(C.BOLD + C.BRIGHT_BLUE, bar)}\n", flush=True)
+          def ok(t):   print(f"  {c(C.BRIGHT_GREEN,  '✔')} {t}", flush=True)
+          def warn(t): print(f"  {c(C.BRIGHT_YELLOW, '⚠')} {t}", flush=True)
+          def err(t):  print(f"  {c(C.RED,           '✘')} {t}", flush=True)
+
+          def set_variable(repo, name, value, token):
+              """PATCH(更新)失败时自动 POST(创建),直接调用 REST API。"""
+              headers = {
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "Content-Type": "application/json",
+              }
+              body = json.dumps({"name": name, "value": value}).encode()
+
+              # 优先尝试更新
+              url_var = f"https://api.github.com/repos/{repo}/actions/variables/{name}"
+              req = urllib.request.Request(url_var, data=body, headers=headers, method="PATCH")
+              try:
+                  urllib.request.urlopen(req)
+                  return "updated"
+              except urllib.error.HTTPError as e:
+                  if e.code != 404:
+                      raise RuntimeError(f"PATCH {name} 失败 HTTP {e.code}: {e.read().decode()}")
+
+              # 变量不存在,改为创建
+              url_all = f"https://api.github.com/repos/{repo}/actions/variables"
+              req = urllib.request.Request(url_all, data=body, headers=headers, method="POST")
+              try:
+                  urllib.request.urlopen(req)
+                  return "created"
+              except urllib.error.HTTPError as e:
+                  raise RuntimeError(f"POST {name} 失败 HTTP {e.code}: {e.read().decode()}")
+
+          header("保存版本号到 GitHub Variables")
+
+          repo        = os.environ["REPO"]
+          new_version = os.environ["NEW_VERSION"]
+          new_code    = os.environ["NEW_CODE"]
+          token       = os.environ.get("GH_TOKEN", "")
+
+          if not token:
+              err("GH_TOKEN 未配置,无法写入 Variables")
+              err("请在仓库 Settings → Secrets 中配置 GH_TOKEN(需具备 repo 或 actions:write 权限)")
+              sys.exit(1)
+
+          if token.startswith("ghs_"):
+              warn("使用内置 GITHUB_TOKEN(ghs_…),依赖 'actions: write' 权限")
+          else:
+              ok("使用 PAT(secrets.GH_TOKEN)")
+
+          failed = False
+          for var_name, var_value in [
+              ("SERVER_VERSION",      new_version),
+              ("SERVER_VERSION_CODE", new_code),
+          ]:
+              try:
+                  action = set_variable(repo, var_name, var_value, token)
+                  ok(f"{var_name} → {var_value}({action})")
+              except RuntimeError as e:
+                  err(str(e))
+                  failed = True
+
+          if failed:
+              warn("版本号未能持久化,下次构建可能从默认值重新计数")
+              warn("请确认 GH_TOKEN 具备 repo 或 actions:write 权限")
+              sys.exit(1)
+          SCRIPT_END
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new_version }}
+          NEW_CODE:    ${{ steps.version.outputs.new_code }}
+
+      - name: 📊 生成构建报告(Job Summary)
+        if: always()
+        run: |
+          python3 <<'SCRIPT_END'
+          import os, glob
+
+          summary_f   = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/null")
+          new_version = os.environ.get("NEW_VERSION",  "")
+          new_code    = os.environ.get("NEW_CODE",     "")
+          tag_name    = os.environ.get("TAG_NAME",     "")
+          event_name  = os.environ.get("GITHUB_EVENT_NAME", "push")
+          bump_major  = os.environ.get("INPUT_BUMP_MAJOR", "false").lower() == "true"
+          commit_sha  = os.environ.get("GITHUB_SHA",   "unknown")[:7]
+          repo        = os.environ.get("REPO",         "")
+
+          if event_name == "push":
+              trigger = "自动构建(push 触发)"
+          elif bump_major:
+              trigger = "手动大版本升级"
+          else:
+              trigger = "手动构建"
+
+          assets = sorted(glob.glob("dist/*"))
+          if assets:
+              status_line = "✅ 构建成功"
+          elif not new_version:
+              status_line = "❌ 构建失败(版本计算阶段中止)"
+          else:
+              status_line = "⚠️ 构建中断"
+
+          lines = [
+              f"## {status_line}",
+              "",
+              "| 字段 | 值 |",
+              "|------|-----|",
+              f"| 版本号 | `{new_version}` |" if new_version else "| 版本号 | — |",
+              f"| VersionCode | `{new_code}` |" if new_code else "| VersionCode | — |",
+              f"| Release 标签 | `{tag_name}` |" if tag_name else "| Release 标签 | — |",
+              f"| 构建方式 | {trigger} |",
+              f"| 源码提交 | `{commit_sha}` |",
+              "",
+          ]
+
+          if assets:
+              lines += ["### 产物清单", ""]
+              for a in assets:
+                  size_mb = os.path.getsize(a) / 1024 / 1024
+                  lines.append(f"- `{os.path.basename(a)}` — {size_mb:.2f} MB")
+              lines.append("")
+
+          if tag_name and assets:
+              lines += [
+                  f"### 下载",
+                  f"前往 [Release {tag_name}](https://github.com/{repo}/releases/tag/{tag_name}) 下载产物。",
+                  "",
+              ]
+
+          with open(summary_f, "w", encoding="utf-8") as f:
+              f.write("\n".join(lines))
+          SCRIPT_END
+        env:
+          NEW_VERSION:      ${{ steps.version.outputs.new_version }}
+          NEW_CODE:         ${{ steps.version.outputs.new_code }}
+          TAG_NAME:         ${{ steps.version.outputs.tag_name }}
+          INPUT_BUMP_MAJOR: ${{ inputs.bump_major }}
