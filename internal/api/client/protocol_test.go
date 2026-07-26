@@ -195,6 +195,11 @@ func TestInit_ResponseShape(t *testing.T) {
 			t.Errorf("asset_auth.%s 缺失", k)
 		}
 	}
+	// expires_at 是 **Unix 秒**,与 server_time_at / expire_time / end_time 一致。
+	// 旧实现返回毫秒,量级断言正是为了防止那种单位回潮——毫秒值会大三个数量级。
+	if exp, ok := aa["expires_at"].(float64); !ok || exp < 1.7e9 || exp > 2.0e9 {
+		t.Errorf("asset_auth.expires_at 应为 Unix 秒(1.7e9~2.0e9), got %v", aa["expires_at"])
+	}
 
 	// ── server / client / features ────────────────────────────────────
 	srvObj, ok := resp["server"].(map[string]any)

@@ -84,8 +84,9 @@ flowchart TB
 
 ## 铁律三:数值单位(毫秒 vs 秒)
 
-- 数据库内统一存 **Unix 毫秒**。
-- 下发给客户端的部分字段是 **Unix 秒**(`expire_time`、`end_time`、`server_time_at`)。
+- **库内统一存 Unix 毫秒。**
+- **下发给客户端的时间字段一律是 Unix 秒**,没有例外:`expire_time`、`end_time`、
+  `server_time_at`、`asset_auth.expires_at`。
 
 ```go
 // 库里是毫秒,下发转秒
@@ -94,13 +95,16 @@ func banExpireSeconds(b *store.Ban) int64 {
 }
 ```
 
-`TestInit_BanReturns200WithBanFields` 甚至断言 `expire_time` 的数量级在
-`1.7e9 ~ 2.0e9`(秒)而非毫秒。加时间字段时**先确认协议文档写的是什么单位**。
+`asset_auth.expires_at` 曾经是毫秒(沿用 Android 期 `resource_token` 的实现),
+协议定稿时统一为秒。
 
-::: warning 一个例外:asset_auth.expires_at 是毫秒
-它沿用既有 `resource_token` 的实现,单位与上面几个不同。协议文档里如实记着这一点——
-**不要"顺手统一"**,那会让已发布的客户端读出 1000 倍的过期时间。
+::: tip 断言量级,不只断言存在
+`TestInit_BanReturns200WithBanFields` 与 `TestInit_ResponseShape` 都断言时间字段的
+**数量级**在 `1.7e9 ~ 2.0e9`。毫秒值会大三个数量级,量级断言能挡住单位回潮——
+只断言"字段存在"是拦不住的。
 :::
+
+加时间字段时**先确认协议文档写的是什么单位**。
 
 ## 铁律四:嵌套位置精确
 

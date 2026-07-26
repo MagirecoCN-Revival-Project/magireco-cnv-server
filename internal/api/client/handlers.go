@@ -221,6 +221,9 @@ func (h *Handler) init(w http.ResponseWriter, r *http.Request) {
 	// asset_auth:资产鉴权信封。必有 type 判别字段,其余字段形状由 type 决定;
 	// 客户端遇到不认识的 type 必须明确失败,禁止猜测或静默降级为无鉴权。
 	// 当前取值 bearer,承载既有的 resource_token(HMAC 签名、绑设备、可轮换)。
+	//
+	// **省略本字段的语义是"客户端拿不到资产",不是"不需要鉴权"**——后者必须显式
+	// 下发 type:"none"(开发期临时值)。故此处签不出令牌时省略,即是 fail-closed。
 	if tok, exp := h.signResourceToken(req.DeviceID); tok != "" {
 		body["asset_auth"] = map[string]any{
 			"type":       "bearer",
@@ -541,7 +544,9 @@ func (h *Handler) signResourceToken(deviceID string) (string, int64) {
 	}
 	now := time.Now().Unix()
 	bucket := now / int64(win)
-	expires := (bucket + 1) * int64(win) * 1000 // ms
+	// 单位是 **Unix 秒**,与 server_time_at / expire_time / end_time 一致。
+	// 旧实现返回毫秒(沿用 Android 期的 resource_token),协议已统一为秒。
+	expires := (bucket + 1) * int64(win)
 	mac := hmac.New(sha256.New, h.ResourceTokenSecret)
 	mac.Write([]byte(deviceID))
 	mac.Write([]byte("|"))
