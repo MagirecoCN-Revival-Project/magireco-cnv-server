@@ -282,21 +282,13 @@ func runBusiness(ctx context.Context, cfg *config.Config, dirJSON json.RawMessag
 		RequireSignature:    cfg.RequireSignature,
 		TokenWindowSec:      30,
 		ClientSessionTTL:    cfg.ClientSessionTTL,
-		PrimaryResBaseURL: func(req *http.Request) string {
-			if cfg.PublicURL != "" {
-				return strings.TrimRight(cfg.PublicURL, "/") + cfg.PrimaryResPath
-			}
-			scheme := "http"
-			if req.TLS != nil {
-				scheme = "https"
-			}
-			return scheme + "://" + req.Host + cfg.PrimaryResPath
-		},
-		Heartbeats:    hearts,
-		AutoBan:       autoBan,
-		DirectoryJSON: dirJSON,
-		MirrorEnabled: mirrorStats.IsEnabled,
-		OnMirrorSpeed: mirrorStats.RecordSpeed,
+		Heartbeats:          hearts,
+		AutoBan:             autoBan,
+		DirectoryJSON:       dirJSON,
+		// SceneAssets 尚未接入构建管线：场景清单的正式形状是待决项 R2。
+		// nil = 该功能未启用，/client/scene-manifest 明确返回 503 而非空清单——
+		// 空清单会被客户端理解为"该场景无需任何资产",从而静默进入残缺场景。
+		SceneAssets: nil,
 	}
 	r.Route("/client", clientH.Routes)
 

@@ -12,10 +12,8 @@ import (
 
 // ── config 包装(读 KV 表)────────────────────────────────────────────────
 
-// serverCfg 与客户端 ClientInit.java 期望的 server 字段顺序一致:
-//
-//	{status, message, end_time} 平级。end_time 是 **Unix 秒**(BootstrapActivity
-//	会调 formatUnixSeconds 直接当秒解析),不是毫秒。
+// serverCfg 握手响应里的 server 子对象:{status, message, end_time} 平级。
+// end_time 是 **Unix 秒**,不是毫秒。
 type serverCfg struct {
 	Status  string `json:"status"`   // ok | maintenance | err
 	Message string `json:"message"`  // 维护/故障提示
@@ -41,58 +39,31 @@ func getServerConfig(ctx context.Context, st *store.Store) serverCfg {
 	return c
 }
 
-// featuresCfg 客户端 ClientInit.java 读的是顶层 features 对象,字段名
-// online_download / offline_package(不是 online_enabled / offline_enabled)。
+// featuresCfg 握手响应里的 features 子对象。
+//
+// Android 的 online_download / offline_package(两种整包资源准备方式)已随
+// 相应端点一并移除:Web 端按需流式取用,没有"资源准备阶段"这个概念。
 type featuresCfg struct {
-	OnlineDownload bool `json:"online_download"`
-	OfflinePackage bool `json:"offline_package"`
-	// AccountEnabled 账号系统总开关。false = 跳过登录/存档同步/悬浮窗,直接进游戏。
+	// AccountEnabled 账号系统总开关。false = 跳过登录与存档同步,直接进游戏。
 	// 缺省(或字段不存在)等同于 true,向后兼容。
 	AccountEnabled  bool   `json:"account_enabled"`
 	DisabledMessage string `json:"disabled_message"`
-	// 旧字段名兼容(管理面板 PUT 进来时仍可能用老 key)
-	OnlineEnabled  *bool `json:"online_enabled,omitempty"`
-	OfflineEnabled *bool `json:"offline_enabled,omitempty"`
 }
 
 func getFeatures(ctx context.Context, st *store.Store) featuresCfg {
-	c := featuresCfg{OnlineDownload: true, OfflinePackage: true, AccountEnabled: true}
+	c := featuresCfg{AccountEnabled: true}
 	_, _ = st.ConfigGet(ctx, "features", &c)
-	if c.OnlineEnabled != nil {
-		c.OnlineDownload = *c.OnlineEnabled
-	}
-	if c.OfflineEnabled != nil {
-		c.OfflinePackage = *c.OfflineEnabled
-	}
 	return c
-}
-
-// versionCfg 客户端读的字段是 `fake_name`(不是 fake_app_name);allowed_versions/
-// update_url_* 在响应里放在 client 子对象。
-type versionCfg struct {
-	AllowedVersions             []string `json:"allowed_versions"`
-	LatestVersion               string   `json:"latest_version"` // 软提示最新版本号,空串 = 不下发
-	FakeVersion                 string   `json:"fake_version"`
-	FakeName                    string   `json:"fake_name"`
-	UpdateURLNormal             string   `json:"update_url_normal"`
-	UpdateURLInternalTest       string   `json:"update_url_internal_test"`
-	UpdateAPKSHA256             string   `json:"update_apk_sha256"`
-	UpdateAPKSHA256InternalTest string   `json:"update_apk_sha256_internal_test"` // 内测渠道独立 sha256
-	// 旧字段名兼容
-	FakeAppName string `json:"fake_app_name,omitempty"`
-}
-
-func (v versionCfg) effectiveFakeName() string {
-	if v.FakeName != "" {
-		return v.FakeName
-	}
-	return v.FakeAppName
 }
 
 // servicesCfg /client/init 响应里的可选 services 对象。
 //
-// 三字段全部可选,**未配置时省略 key**(客户端 Android org.json 对显式 null 会
-// 错误地拿到字符串 "null")。详见 e9619a72-___API____.md。
+// 三字段全部可选,**未配置时省略 key**(不发送 JSON null)。
+//
+// ⚠️ proxy_backends / game_server_host 是 Android 端把原版游戏 WebView 流量
+// 导向本项目代理用的,Web 端没有对应概念,属待清理项;因其配置面(管理 API +
+// 面板 UI)不属协议层,留待单独一次改动移除。cap_worker_url(注册用的 PoW
+// 验证码服务)仍然需要。
 //
 //	cap_worker_url    string   — 人机验证服务地址(含协议,不带尾斜杠)
 //	proxy_backends    []string — 游戏代理后端列表(按数组顺序尝试)
@@ -159,43 +130,27 @@ func (c servicesCfg) toResponseMap() map[string]any {
 	return out
 }
 
-func getVersionConfig(ctx context.Context, st *store.Store) versionCfg {
-	var c versionCfg
-	_, _ = st.ConfigGet(ctx, "versions", &c)
-	if c.AllowedVersions == nil {
-		c.AllowedVersions = []string{}
-	}
-	return c
-}
-
-// offlinePackPolicy 离线包版本策略。详见 server-offline-pack-validation.md §3.1。
-// 与 store.OfflinePackage(具体包的元数据)区分:OfflinePackage.PackageVersion 是
-// 当前云端包的版本号,MinVersion 是服务端**要求**客户端必须安装的最低版本,
-// 两者可以不同。空 MinVersion → 客户端跳过版本检查,静默继续。
-type offlinePackPolicy struct {
-	MinVersion string `json:"min_version"`
-}
-
-func getOfflinePackPolicy(ctx context.Context, st *store.Store) offlinePackPolicy {
-	var p offlinePackPolicy
-	_, _ = st.ConfigGet(ctx, "offline_pack", &p)
-	p.MinVersion = strings.TrimSpace(p.MinVersion)
-	return p
-}
+// versions / offline_pack 两组 config 的读取器已随 APK 版本闸门与离线包端点移除。
+// 管理后台仍可写这两个 key(见 internal/api/admin),但 /client/* 不再读取。
 
 // ── 心跳内存存储 ────────────────────────────────────────────────────────
 
+// hbFile 单个文件的下载进度。
+//
+// ⚠️ **新协议下不再有任何来源会填充它**:精简版心跳不接收上报载荷,
+// Web 端按需流式取用资产,不存在"下载阶段"。此处保留仅因管理面板的在线设备页
+// 与换线 UI 仍引用这套结构;它们与本类型将在一次单独的改动中一并移除。
+type hbFile struct {
+	Name     string  `json:"name"`
+	Status   string  `json:"status"` // pending|downloading|done|failed
+	Percent  float64 `json:"percent"`
+	SpeedBps int64   `json:"speed_bps"`
+}
+
 // HBState 一个设备的最新心跳快照。
 //
-// 字段语义对齐客户端 ResourceFlow.HeartbeatSender / SaveOverlayService.sendGameHeartbeat:
-//   - 下载阶段(在线资源下载 / 热更新)：客户端自己跑下载 worker,每 5 秒上报
-//     Files[]（每项 name/status/percent/speed_bps）。Progress/SpeedBps/CurrentFile
-//     由 Files 聚合得到(见 heartbeat handler)。
-//   - 游戏阶段：客户端在游戏内每 5 秒上报空 Files[]（仅为收取封禁/维护指令），
-//     无下载进度与速度。
-//
-// 注意：离线整包由系统浏览器下载、客户端仅做文件导入,全程不发心跳,故不会出现在
-// 心跳监控里——“离线包下载速度”在协议上并不存在。
+// 新协议下只有 Phase="game" 与 LastSeen 有意义:心跳的唯一职责是给服务端一个
+// 下发封禁/维护状态的时机。其余字段恒为零值,见 hbFile 的说明。
 type HBState struct {
 	Progress    float64 `json:"progress"`
 	SpeedBps    int64   `json:"speed_bps"`

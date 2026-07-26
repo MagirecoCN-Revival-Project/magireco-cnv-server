@@ -1,14 +1,13 @@
 // Package client 的协议保真测试。
 //
-// 字段全部以 magireco-cnv-client/patch/src/main/java/io/kamihama/cnv/
-// 下的 Java 源码为唯一真理:
+// **字段以架构协议文档(magirecocn-architecture-protocol-document)为唯一真理。**
+// 早期版本以 Android 客户端的 Java 源码为锚点,该锚点已随 Android 端弃维而失效。
 //
-//   * ClientInit.java     — /client/init 请求与响应、/online-download、
-//                            /offline-package、/hot-update、authTriple()
-//   * ResourceFlow.java   — /client/heartbeat 请求与响应(ban / switch_mirrors)
-//   * SaveSyncHelper.java — /account/save/{put,get}(此包不覆盖)
+// 这套测试的职责有两面,缺一不可:
 //
-// 任何时候改 handler 都需要让这套测试继续通过 —— 否则就说明真机要崩。
+//   - **正向**:新协议要求的字段确实出现在约定的位置;
+//   - **反向**:Android 专有字段确实**不再**出现——哪怕对应的 config 仍留在库里。
+//     少了反向断言,删字段这件事就没有回归保护,下次重构很容易把它们捡回来。
 package client
 
 import (
@@ -48,9 +47,6 @@ func newTestHandler(t *testing.T) (*Handler, *store.Store) {
 		TokenWindowSec:      300,
 		ClientSessionTTL:    time.Hour,
 		Heartbeats:          NewHeartbeats(),
-		PrimaryResBaseURL: func(*http.Request) string {
-			return "https://primary.example.com/res"
-		},
 	}, st
 }
 
@@ -60,7 +56,33 @@ func newRouter(h *Handler) http.Handler {
 	return r
 }
 
-// postJSON 模拟客户端 Net.postJson:发 JSON、读 JSON,断言 HTTP 200。
+// postJSONRaw 发 JSON、读 JSON,返回状态码而不在非 200 时 t.Fatal,
+// 供断言错误响应的用例使用。
+func postJSONRaw(t *testing.T, srv http.Handler, path string, body any) (int, map[string]any) {
+	t.Helper()
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(buf))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	var out map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	return w.Code, out
+}
+
+// authTripleFor 先走一次 /client/init 拿到会话，返回后续端点所需的 authTriple。
+func authTripleFor(t *testing.T, h *Handler, srv http.Handler, deviceID string) map[string]any {
+	t.Helper()
+	resp := postJSON(t, srv, "/client/init", map[string]any{
+		"version": "1.0.0", "device_id": deviceID, "signature": "", "channel": "normal",
+	})
+	tok, _ := resp["access_token"].(string)
+	if tok == "" {
+		t.Fatalf("init 未返回 access_token")
+	}
+	return map[string]any{"device_id": deviceID, "access_token": tok, "signature": ""}
+}
+
 func postJSON(t *testing.T, srv http.Handler, path string, body any) map[string]any {
 	t.Helper()
 	buf, _ := json.Marshal(body)
@@ -80,14 +102,15 @@ func postJSON(t *testing.T, srv http.Handler, path string, body any) map[string]
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// /client/init — 字段对照 ClientInit.handshake() 第 126-170 行
+// /client/init — 握手
 // ─────────────────────────────────────────────────────────────────────────
 
+// TestInit_RequestFields —— 最小握手:只给 version/device_id/signature/channel,
+// 不带 protocol_versions(老客户端),应当照常签发会话。
 func TestInit_RequestFields(t *testing.T) {
 	h, _ := newTestHandler(t)
 	srv := newRouter(h)
 
-	// 客户端实际发的 body(ClientInit.java 第 126-130 行):
 	resp := postJSON(t, srv, "/client/init", map[string]any{
 		"version":   "4.0.0",
 		"device_id": "dev_abc123",
@@ -108,171 +131,131 @@ func TestInit_ResponseShape(t *testing.T) {
 	h, st := newTestHandler(t)
 	srv := newRouter(h)
 
-	// 种入所有配置,保证字段都出现在响应里。
 	ctx := context.Background()
 	_ = st.ConfigSet(ctx, "server", map[string]any{
-		"status": "maintenance", "message": "测试维护", "end_time": int64(1_770_000_000),
+		"status": "ok", "message": "测试提示", "end_time": int64(1_770_000_000),
 	})
 	_ = st.ConfigSet(ctx, "features", map[string]any{
-		"online_download": true, "offline_package": true, "disabled_message": "下载暂停",
+		"account_enabled": true, "disabled_message": "下载暂停",
 	})
+	// versions 这组 config 仍可被管理后台写入,但新协议下 /client/init 不再读它。
+	// 种进去正是为了确认它**不会**泄漏成响应字段(见文末的 Android 专有字段断言)。
 	_ = st.ConfigSet(ctx, "versions", map[string]any{
-		"allowed_versions":         []string{"4.0.0"},
-		"fake_version":             "1.0.0",
-		"fake_name":                "假名",
-		"update_url_normal":        "https://u.example.com/n",
-		"update_url_internal_test": "https://u.example.com/i",
-		"update_apk_sha256":        "abc",
+		"allowed_versions":  []string{"4.0.0"},
+		"update_url_normal": "https://example.invalid/app.apk",
+		"latest_version":    "9.9.9",
 	})
-	// 重新解封,因为种入了 maintenance status
-	// 用全新 device_id 避免和别的测试冲突
 
 	resp := postJSON(t, srv, "/client/init", map[string]any{
 		"version": "4.0.0", "device_id": "dev_shape", "signature": "", "channel": "normal",
+		"protocol_versions": []int{1},
 	})
 
-	// 客户端读的是顶层 banned (ClientInit.java 第 141 行)
-	if v, ok := resp["banned"]; !ok {
-		t.Errorf("missing top-level `banned`")
-	} else if v != false {
-		t.Errorf("expected banned=false, got %v", v)
+	// ── 新协议要求存在的顶层字段 ──────────────────────────────────────
+	for _, k := range []string{
+		"success", "banned", "protocol_version", "protocol_versions", "access_token",
+		"server_time_at", "server", "features", "asset_auth",
+	} {
+		if _, ok := resp[k]; !ok {
+			t.Errorf("顶层缺少 %q", k)
+		}
+	}
+	if got := resp["protocol_version"]; got != float64(ProtocolVersion) {
+		t.Errorf("protocol_version = %v, want %d", got, ProtocolVersion)
+	}
+	if ts, ok := resp["server_time_at"].(float64); !ok || ts <= 0 {
+		t.Errorf("server_time_at 应为正的 Unix 秒, got %v", resp["server_time_at"])
+	}
+	// protocol_versions 是服务端支持的全集,且必须包含本次协商结果——
+	// 否则客户端无从判断"升到哪一版还能继续对话"。
+	pvs, ok := resp["protocol_versions"].([]any)
+	if !ok || len(pvs) == 0 {
+		t.Fatalf("protocol_versions 应为非空数组, got %v", resp["protocol_versions"])
+	}
+	found := false
+	for _, v := range pvs {
+		if v == float64(ProtocolVersion) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("protocol_versions %v 未包含协商结果 %d", pvs, ProtocolVersion)
 	}
 
-	// server.{status, message, end_time} 平级 (第 145-149 行)
+	// ── asset_auth 信封:必有 type 判别字段 ───────────────────────────
+	aa, ok := resp["asset_auth"].(map[string]any)
+	if !ok {
+		t.Fatalf("asset_auth 应为对象, got %v", resp["asset_auth"])
+	}
+	if aa["type"] != "bearer" {
+		t.Errorf("asset_auth.type = %v, want bearer", aa["type"])
+	}
+	for _, k := range []string{"token", "expires_at"} {
+		if _, ok := aa[k]; !ok {
+			t.Errorf("asset_auth.%s 缺失", k)
+		}
+	}
+
+	// ── server / client / features ────────────────────────────────────
 	srvObj, ok := resp["server"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected `server` to be an object")
+		t.Fatalf("server 应为对象")
 	}
 	for _, k := range []string{"status", "message", "end_time"} {
 		if _, ok := srvObj[k]; !ok {
-			t.Errorf("server.%s missing", k)
+			t.Errorf("server.%s 缺失", k)
 		}
 	}
-	// **不能**有 server.maintenance 这个嵌套对象,否则字段读不到
-	if _, has := srvObj["maintenance"]; has {
-		t.Errorf("server.maintenance should be flat, not nested")
-	}
-
-	// client.{allowed_versions, update_url_normal, update_url_internal_test}
-	clientObj, ok := resp["client"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected `client` object")
-	}
-	for _, k := range []string{"allowed_versions", "update_url_normal", "update_url_internal_test"} {
-		if _, ok := clientObj[k]; !ok {
-			t.Errorf("client.%s missing", k)
-		}
-	}
-
-	// spoof.{fake_version, fake_name} 顶层对象 (第 160-163 行)
-	spoofObj, ok := resp["spoof"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected `spoof` object at top level (not nested under client)")
-	}
-	for _, k := range []string{"fake_version", "fake_name"} {
-		if _, ok := spoofObj[k]; !ok {
-			t.Errorf("spoof.%s missing — 客户端读不到伪装信息", k)
-		}
-	}
-
-	// features.{online_download, offline_package, disabled_message} (第 166-170 行)
 	feat, ok := resp["features"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected `features` object at top level")
+		t.Fatalf("features 应为对象")
 	}
-	for _, k := range []string{"online_download", "offline_package", "disabled_message"} {
+	for _, k := range []string{"account_enabled", "disabled_message"} {
 		if _, ok := feat[k]; !ok {
-			t.Errorf("features.%s missing — 客户端会读到默认 true,无法关闭下载", k)
+			t.Errorf("features.%s 缺失", k)
+		}
+	}
+
+	// ── Android 专有字段必须已经消失 ──────────────────────────────────
+	// 留在响应里会误导 Web 客户端,也会让协议文档与实现脱节。
+	// 注意上面已把 versions 配置种进库:这些断言证明的是"配置存在也不下发",
+	// 而不是"恰好没配所以看不见"。
+	for _, k := range []string{"spoof", "offline_pack", "client", "force_update"} {
+		if _, ok := resp[k]; ok {
+			t.Errorf("顶层不应再出现 %q(Android 专有)", k)
+		}
+	}
+	for _, k := range []string{"online_download", "offline_package"} {
+		if _, ok := feat[k]; ok {
+			t.Errorf("features.%s 不应再下发(整包资源准备)", k)
 		}
 	}
 }
 
-// TestInit_LatestVersion_DownsendsWhenSet —— 配置了 latest_version 时,
-// /client/init 响应的 client 对象中须携带该字段供客户端做软更新提示判断。
-func TestInit_LatestVersion_DownsendsWhenSet(t *testing.T) {
+// TestInit_UnlistedVersionStillHandshakes —— APK 版本闸门已移除:
+// 即便 allowed_versions 里没有客户端上报的版本号,握手也照常完成,
+// 不再返回 force_update / update_url_*。浏览器自行更新,无 APK 可推。
+func TestInit_UnlistedVersionStillHandshakes(t *testing.T) {
 	h, st := newTestHandler(t)
-	srv := newRouter(h)
-	_ = st.ConfigSet(context.Background(), "versions", map[string]any{
-		"allowed_versions": []string{"4.0.0"},
-		"latest_version":   "4.1.0",
-	})
-	resp := postJSON(t, srv, "/client/init", map[string]any{
-		"version": "4.0.0", "device_id": "dev_lv_set", "signature": "", "channel": "normal",
-	})
-	clientObj, ok := resp["client"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected client object")
-	}
-	if clientObj["latest_version"] != "4.1.0" {
-		t.Errorf("client.latest_version: want 4.1.0, got %v", clientObj["latest_version"])
-	}
-}
-
-// TestInit_LatestVersion_OmittedWhenUnset —— 未配置 latest_version 时,
-// client 对象不得携带该字段(空字段省略规则)。
-func TestInit_LatestVersion_OmittedWhenUnset(t *testing.T) {
-	h, _ := newTestHandler(t)
-	srv := newRouter(h)
-	resp := postJSON(t, srv, "/client/init", map[string]any{
-		"version": "4.0.0", "device_id": "dev_lv_unset", "signature": "", "channel": "normal",
-	})
-	clientObj := resp["client"].(map[string]any)
-	if _, has := clientObj["latest_version"]; has {
-		t.Errorf("client.latest_version should be omitted when not configured, got %v", clientObj["latest_version"])
-	}
-}
-
-// TestInit_UpdateAPKSHA256_PerChannel —— 内测渠道单独配置了 sha256 时,
-// internal-test 请求应拿到内测 sha256;normal 请求应拿到通用 sha256。
-func TestInit_UpdateAPKSHA256_PerChannel(t *testing.T) {
-	h, st := newTestHandler(t)
-	srv := newRouter(h)
-	_ = st.ConfigSet(context.Background(), "versions", map[string]any{
-		"allowed_versions":                []string{"4.0.0"},
-		"update_apk_sha256":               "sha256-normal",
-		"update_apk_sha256_internal_test": "sha256-internal",
-	})
-
-	// 内测渠道 → 内测 sha256
-	respIT := postJSON(t, srv, "/client/init", map[string]any{
-		"version": "4.0.0", "device_id": "dev_sha_it", "signature": "", "channel": "internal-test",
-	})
-	clientIT := respIT["client"].(map[string]any)
-	if clientIT["update_apk_sha256"] != "sha256-internal" {
-		t.Errorf("internal-test channel: want sha256-internal, got %v", clientIT["update_apk_sha256"])
-	}
-
-	// 正式渠道 → 通用 sha256
-	respN := postJSON(t, srv, "/client/init", map[string]any{
-		"version": "4.0.0", "device_id": "dev_sha_n", "signature": "", "channel": "normal",
-	})
-	clientN := respN["client"].(map[string]any)
-	if clientN["update_apk_sha256"] != "sha256-normal" {
-		t.Errorf("normal channel: want sha256-normal, got %v", clientN["update_apk_sha256"])
-	}
-}
-
-// TestInit_UpdateAPKSHA256_FallbackToCommon —— 内测渠道未单独配置 sha256 时,
-// 回退到通用 update_apk_sha256。
-func TestInit_UpdateAPKSHA256_FallbackToCommon(t *testing.T) {
-	h, st := newTestHandler(t)
-	srv := newRouter(h)
 	_ = st.ConfigSet(context.Background(), "versions", map[string]any{
 		"allowed_versions":  []string{"4.0.0"},
-		"update_apk_sha256": "sha256-common",
-		// 不设 update_apk_sha256_internal_test
+		"update_url_normal": "https://example.invalid/app.apk",
 	})
-	resp := postJSON(t, srv, "/client/init", map[string]any{
-		"version": "4.0.0", "device_id": "dev_sha_fb", "signature": "", "channel": "internal-test",
+	resp := postJSON(t, newRouter(h), "/client/init", map[string]any{
+		"device_id": "dev_oldver", "version": "1.0.0-不在白名单",
 	})
-	clientObj := resp["client"].(map[string]any)
-	if clientObj["update_apk_sha256"] != "sha256-common" {
-		t.Errorf("fallback: want sha256-common, got %v", clientObj["update_apk_sha256"])
+	if resp["success"] != true {
+		t.Fatalf("版本不在白名单也应握手成功, got %v", resp)
+	}
+	if _, ok := resp["access_token"].(string); !ok {
+		t.Errorf("应照常签发 access_token, got %v", resp["access_token"])
+	}
+	for _, k := range []string{"force_update", "update_url_normal", "current_version"} {
+		if _, has := resp[k]; has {
+			t.Errorf("不应再下发 %q(APK 更新流程已移除)", k)
+		}
 	}
 }
-
-// TestInit_FeatureAccountEnabled_DefaultTrue —— features.account_enabled 未配置时
-// 客户端应收到 true(向后兼容:无此字段等同于已启用)。
 func TestInit_FeatureAccountEnabled_DefaultTrue(t *testing.T) {
 	h, _ := newTestHandler(t)
 	resp := postJSON(t, newRouter(h), "/client/init", map[string]any{
@@ -300,9 +283,8 @@ func TestInit_FeatureAccountEnabled_FalseWhenConfigured(t *testing.T) {
 	}
 }
 
-// TestInit_OmitsEmptyOptionalStrings —— 客户端 API 变动说明 §1.1 & §4 强制规定:
-// 所有可选字符串字段未设置时必须省略 key,绝不发送 JSON null。Android org.json
-// 的 optString 对显式 null 会返回字符串 "null"。
+// TestInit_OmitsEmptyOptionalStrings —— 可选字符串字段未设置时必须省略 key,
+// 不发送 JSON null:"字段缺席"与"字段为空"在客户端是两种不同的判断。
 func TestInit_OmitsEmptyOptionalStrings(t *testing.T) {
 	h, _ := newTestHandler(t)
 	srv := newRouter(h)
@@ -319,24 +301,17 @@ func TestInit_OmitsEmptyOptionalStrings(t *testing.T) {
 		t.Errorf("server.end_time should be omitted when 0, got %v", srvObj["end_time"])
 	}
 
-	// spoof 全空时,fake_version/fake_name 不应出现(spoof 对象本身可以是空 {})
-	spoofObj := resp["spoof"].(map[string]any)
-	if _, has := spoofObj["fake_version"]; has {
-		t.Errorf("spoof.fake_version should be omitted when empty")
-	}
-	if _, has := spoofObj["fake_name"]; has {
-		t.Errorf("spoof.fake_name should be omitted when empty")
+	// spoof 已随 Android 弃维移除:无论是否配置都不应出现。
+	if _, has := resp["spoof"]; has {
+		t.Errorf("spoof 不应再下发(Android 原生引擎版本伪造,Web 端无此概念)")
 	}
 
-	// client.update_url_* 未配置时不应出现
-	clientObj := resp["client"].(map[string]any)
-	for _, k := range []string{"update_url_normal", "update_url_internal_test", "update_apk_sha256"} {
-		if _, has := clientObj[k]; has {
-			t.Errorf("client.%s should be omitted when empty", k)
-		}
+	// client 子对象整体已移除(它只承载 APK 版本闸门与更新地址)。
+	if _, has := resp["client"]; has {
+		t.Errorf("client 子对象不应再下发(APK 版本闸门/更新地址)")
 	}
 
-	// features.disabled_message 未配置时不应出现(online_download/offline_package 是 bool,允许 false)
+	// features.disabled_message 未配置时不应出现(account_enabled 是 bool,允许 false)
 	featObj := resp["features"].(map[string]any)
 	if _, has := featObj["disabled_message"]; has {
 		t.Errorf("features.disabled_message should be omitted when empty")
@@ -455,22 +430,8 @@ func TestInit_GameServerHost_WithPort(t *testing.T) {
 	}
 }
 
-// TestOfflinePackage_OmitsEmpty —— 未配置离线包时,download_url/package_version/
-// sha256 应当全部省略(客户端 optString 拿到 null,会跳过提示离线包入口)。
-func TestOfflinePackage_OmitsEmpty(t *testing.T) {
-	h, _ := newTestHandler(t)
-	srv := newRouter(h)
-	tok := initAndGetToken(t, srv, "dev_no_off")
-	resp := postJSON(t, srv, "/client/offline-package", map[string]any{
-		"device_id": "dev_no_off", "access_token": tok, "signature": "",
-	})
-	for _, k := range []string{"download_url", "package_version", "sha256"} {
-		if _, has := resp[k]; has {
-			t.Errorf("offline.%s should be omitted when not configured, got %v", k, resp[k])
-		}
-	}
-}
-
+// TestInit_BanReturns200WithBanFields —— 封禁是业务结果而非传输错误:
+// 必须 HTTP 200,且 ban_reason / expire_time 平铺在顶层。
 func TestInit_BanReturns200WithBanFields(t *testing.T) {
 	h, st := newTestHandler(t)
 	srv := newRouter(h)
@@ -488,14 +449,14 @@ func TestInit_BanReturns200WithBanFields(t *testing.T) {
 	resp := postJSON(t, srv, "/client/init", map[string]any{
 		"version": "4.0.0", "device_id": "banned_dev", "signature": "", "channel": "normal",
 	})
-	// 客户端 Net.postJson 对 HTTP ≥ 400 会抛 IOException —— 所以封禁必须 HTTP 200
+	// 封禁必须 HTTP 200:客户端要读到 body 里的理由与到期时间才能提示玩家
 	if resp["banned"] != true {
 		t.Errorf("expected banned=true, got %v", resp["banned"])
 	}
 	if resp["ban_reason"] != "测试封禁" {
 		t.Errorf("expected ban_reason='测试封禁', got %v", resp["ban_reason"])
 	}
-	// expire_time 必须是 Unix **秒**(客户端 BanInfo.java 第 72 行 optLong + 第 575 行 *1000L)
+	// expire_time 必须是 Unix **秒**,不是毫秒
 	if ts, ok := resp["expire_time"].(float64); !ok {
 		t.Errorf("expire_time should be number, got %T", resp["expire_time"])
 	} else if ts < 1_700_000_000 || ts > 2_000_000_000 {
@@ -519,189 +480,11 @@ func postRaw(t *testing.T, srv http.Handler, path string, body any) *httptest.Re
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// 版本闸门 force_update — version-not-allowed-followup.md 方案 A
-// (客户端 2026-05-30 已确认实现)
+// 客户端签名白名单
 // ─────────────────────────────────────────────────────────────────────────
 
-// TestInit_VersionNotAllowed_ReturnsForceUpdate —— 客户端版本不在 allowed_versions
-// 列表里时,必须 HTTP 200 + force_update:true,且带上 update_url。**不能** HTTP 4xx
-// (会被客户端 Net.postJson 直接抛 IOException,update_url 永远读不到)。
-func TestInit_VersionNotAllowed_ReturnsForceUpdate(t *testing.T) {
-	h, st := newTestHandler(t)
-	srv := newRouter(h)
-	_ = st.ConfigSet(context.Background(), "versions", map[string]any{
-		"allowed_versions":         []string{"4.0.0", "4.1.0"},
-		"update_url_normal":        "https://dl.example.com/normal.apk",
-		"update_url_internal_test": "https://dl.example.com/internal.apk",
-	})
-
-	// 关键:必须用 postRaw 拿原始状态码,确认是 200 而不是 403。
-	w := postRaw(t, srv, "/client/init", map[string]any{
-		"version": "3.9.0", "device_id": "dev_old", "signature": "", "channel": "normal",
-	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("version_not_allowed 必须 HTTP 200(否则客户端 Net.postJson 抛 IOException 读不到 body),得到 %d: %s", w.Code, w.Body.String())
-	}
-	var resp map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
-	}
-	if resp["success"] != false {
-		t.Errorf("强制更新分支 success 应当为 false,得到 %v", resp["success"])
-	}
-	if resp["force_update"] != true {
-		t.Errorf("缺少 force_update:true,客户端 ClientInit.parse 不会触发更新流程")
-	}
-	if resp["current_version"] != "3.9.0" {
-		t.Errorf("current_version 应当回显请求的版本,得到 %v", resp["current_version"])
-	}
-	if resp["update_url_normal"] != "https://dl.example.com/normal.apk" {
-		t.Errorf("update_url_normal 缺失或错误: %v", resp["update_url_normal"])
-	}
-	if resp["update_url_internal_test"] != "https://dl.example.com/internal.apk" {
-		t.Errorf("update_url_internal_test 缺失或错误: %v", resp["update_url_internal_test"])
-	}
-	// **不应**返回 access_token / server / client / spoof / features
-	// (客户端 doc 明确:force_update=true 时不要继续读这些字段)
-	for _, k := range []string{"access_token", "server", "client", "spoof", "features"} {
-		if _, has := resp[k]; has {
-			t.Errorf("force_update 响应不应该携带 %s(客户端不会读)", k)
-		}
-	}
-}
-
-// TestInit_VersionNotAllowed_OmitsMissingURLs —— 没配 update_url 时,
-// 那些键省略不发(避免客户端 optString 拿到 "" 误以为有值)。
-func TestInit_VersionNotAllowed_OmitsMissingURLs(t *testing.T) {
-	h, st := newTestHandler(t)
-	srv := newRouter(h)
-	_ = st.ConfigSet(context.Background(), "versions", map[string]any{
-		"allowed_versions": []string{"4.0.0"},
-		// 故意不设 update_url_*
-	})
-	w := postRaw(t, srv, "/client/init", map[string]any{
-		"version": "3.9.0", "device_id": "dev_old2", "signature": "", "channel": "normal",
-	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["force_update"] != true {
-		t.Fatalf("force_update missing: %v", resp)
-	}
-	for _, k := range []string{"update_url_normal", "update_url_internal_test"} {
-		if _, has := resp[k]; has {
-			t.Errorf("%s 未配置时应当省略,得到 %v", k, resp[k])
-		}
-	}
-}
-
-// TestInit_VersionAllowed_NoForceUpdate —— 在白名单内的版本走正常流程,
-// force_update 不应出现,access_token 应该签发。
-func TestInit_VersionAllowed_NoForceUpdate(t *testing.T) {
-	h, st := newTestHandler(t)
-	srv := newRouter(h)
-	_ = st.ConfigSet(context.Background(), "versions", map[string]any{
-		"allowed_versions": []string{"4.0.0", "4.1.0"},
-	})
-	resp := postJSON(t, srv, "/client/init", map[string]any{
-		"version": "4.1.0", "device_id": "dev_ok_ver", "signature": "", "channel": "normal",
-	})
-	if _, has := resp["force_update"]; has {
-		t.Errorf("合法版本响应不应该带 force_update,得到 %v", resp["force_update"])
-	}
-	if _, ok := resp["access_token"].(string); !ok {
-		t.Errorf("合法版本应当签发 access_token,响应=%v", resp)
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// 离线包版本策略 offline_pack.min_version
-// (server-offline-pack-validation.md §3.1)
-// ─────────────────────────────────────────────────────────────────────────
-
-// TestInit_OfflinePack_OmittedWhenUnset —— 未配置 min_version 时整个
-// offline_pack 对象不下发。客户端会跳过版本检查,不弹窗、不阻断启动。
-func TestInit_OfflinePack_OmittedWhenUnset(t *testing.T) {
-	h, _ := newTestHandler(t)
-	srv := newRouter(h)
-	resp := postJSON(t, srv, "/client/init", map[string]any{
-		"version": "4.0.0", "device_id": "dev_op_unset", "signature": "", "channel": "normal",
-	})
-	if _, has := resp["offline_pack"]; has {
-		t.Errorf("offline_pack 未配置时应当省略整个对象,得到 %v", resp["offline_pack"])
-	}
-}
-
-// TestInit_OfflinePack_DownsendsMinVersion —— 配置了 min_version 后,
-// /client/init 响应顶层带 offline_pack:{min_version}。
-func TestInit_OfflinePack_DownsendsMinVersion(t *testing.T) {
-	h, st := newTestHandler(t)
-	srv := newRouter(h)
-	_ = st.ConfigSet(context.Background(), "offline_pack", map[string]any{
-		"min_version": "20250501",
-	})
-	resp := postJSON(t, srv, "/client/init", map[string]any{
-		"version": "4.0.0", "device_id": "dev_op_set", "signature": "", "channel": "normal",
-	})
-	op, ok := resp["offline_pack"].(map[string]any)
-	if !ok {
-		t.Fatalf("offline_pack 应当是对象,得到 %T: %v", resp["offline_pack"], resp["offline_pack"])
-	}
-	if op["min_version"] != "20250501" {
-		t.Errorf("min_version 应当为 20250501,得到 %v", op["min_version"])
-	}
-}
-
-// TestInit_OfflinePack_EmptyMinVersion_StillOmits —— 显式存了空串
-// min_version 时(运维曾设过策略后又清空)也应当当作"不下发"处理。
-func TestInit_OfflinePack_EmptyMinVersion_StillOmits(t *testing.T) {
-	h, st := newTestHandler(t)
-	srv := newRouter(h)
-	_ = st.ConfigSet(context.Background(), "offline_pack", map[string]any{
-		"min_version": "  ", // 全空白
-	})
-	resp := postJSON(t, srv, "/client/init", map[string]any{
-		"version": "4.0.0", "device_id": "dev_op_empty", "signature": "", "channel": "normal",
-	})
-	if _, has := resp["offline_pack"]; has {
-		t.Errorf("min_version 为空时 offline_pack 应当省略,得到 %v", resp["offline_pack"])
-	}
-}
-
-// TestOfflinePackage_StillReturnsSha256 —— 离线包元数据接口已有返回
-// {download_url, package_version, sha256, size},新设计客户端会用这些做实时
-// 校验。重申字段名以防回归。
-func TestOfflinePackage_StillReturnsRequiredFields(t *testing.T) {
-	h, st := newTestHandler(t)
-	srv := newRouter(h)
-	uploaded := time.Now().UnixMilli()
-	_ = st.OfflinePackageSet(context.Background(), store.OfflinePackage{
-		DownloadURL:    "https://cdn.example.com/pack/cn_offline_20250501.zip",
-		PackageVersion: "20250501",
-		SHA256:         "a3f1c2d4e5b67890123456789012345678901234567890123456789012345678",
-		Size:           4096,
-		UploadedAt:     &uploaded,
-	})
-	tok := initAndGetToken(t, srv, "dev_pack_meta")
-	resp := postJSON(t, srv, "/client/offline-package", map[string]any{
-		"device_id": "dev_pack_meta", "access_token": tok, "signature": "",
-	})
-	want := map[string]any{
-		"download_url":    "https://cdn.example.com/pack/cn_offline_20250501.zip",
-		"package_version": "20250501",
-		"sha256":          "a3f1c2d4e5b67890123456789012345678901234567890123456789012345678",
-	}
-	for k, v := range want {
-		if resp[k] != v {
-			t.Errorf("offline-package.%s: want %v, got %v", k, v, resp[k])
-		}
-	}
-}
-
-// TestInit_RejectsEmptySignatureWhenWhitelistSet —— 配了白名单后,空 signature
-// 必须拒发会话(防改包客户端拿不到签名时发空串就直接放行)。
+// TestInit_RejectsEmptySignatureWhenWhitelistSet —— 配了白名单却收到空 signature
+// 时必须拒绝:空串必然不在白名单,放行等于让白名单形同虚设。
 func TestInit_RejectsEmptySignatureWhenWhitelistSet(t *testing.T) {
 	h, _ := newTestHandler(t)
 	h.SignatureAllowed = []string{"abcdef0123456789"}
@@ -792,7 +575,7 @@ func TestRequireClientSession_SignatureChangedMidSession(t *testing.T) {
 	tok := resp["access_token"].(string)
 
 	// 2) 后续请求换成不同签名(模拟换包客户端 / 中间人篡改)
-	w := postRaw(t, srv, "/client/method-select", map[string]any{
+	w := postRaw(t, srv, "/client/heartbeat", map[string]any{
 		"device_id": "dev_mid_change", "access_token": tok,
 		"signature": "deadbeef00000000deadbeef00000000deadbeef00000000deadbeef00000000",
 		"method":    "online",
@@ -805,7 +588,7 @@ func TestRequireClientSession_SignatureChangedMidSession(t *testing.T) {
 	}
 
 	// 3) session 已作废:即便回到正确签名也用不了(必须重新握手)
-	w2 := postRaw(t, srv, "/client/method-select", map[string]any{
+	w2 := postRaw(t, srv, "/client/heartbeat", map[string]any{
 		"device_id": "dev_mid_change", "access_token": tok,
 		"signature": good, "method": "online",
 	})
@@ -815,17 +598,17 @@ func TestRequireClientSession_SignatureChangedMidSession(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// authTriple 鉴权 — ClientInit.authTriple() 第 316-321 行
+// authTriple 鉴权 — {device_id, access_token, signature}
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestAuthTriple_Required(t *testing.T) {
 	h, _ := newTestHandler(t)
 	srv := newRouter(h)
-	// /method-select 不带 access_token 应当 401
+	// 受保护端点不带 access_token 应当 401
 	buf, _ := json.Marshal(map[string]any{
-		"device_id": "dev_x", "signature": "", "method": "online",
+		"device_id": "dev_x", "signature": "",
 	})
-	req := httptest.NewRequest(http.MethodPost, "/client/method-select", bytes.NewReader(buf))
+	req := httptest.NewRequest(http.MethodPost, "/client/heartbeat", bytes.NewReader(buf))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
@@ -845,7 +628,7 @@ func TestAuthTriple_WrongDevice(t *testing.T) {
 	buf, _ := json.Marshal(map[string]any{
 		"device_id": "dev_b", "access_token": tok, "signature": "", "method": "online",
 	})
-	req := httptest.NewRequest(http.MethodPost, "/client/method-select", bytes.NewReader(buf))
+	req := httptest.NewRequest(http.MethodPost, "/client/heartbeat", bytes.NewReader(buf))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
@@ -868,181 +651,7 @@ func initAndGetToken(t *testing.T, srv http.Handler, deviceID string) string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// /client/online-download — ClientInit.fetchOnlineDownload 第 198-265 行
-// ─────────────────────────────────────────────────────────────────────────
-
-func TestOnlineDownload_GroupsShape(t *testing.T) {
-	h, _ := newTestHandler(t)
-	srv := newRouter(h)
-	tok := initAndGetToken(t, srv, "dev_dl")
-	resp := postJSON(t, srv, "/client/online-download", map[string]any{
-		"device_id": "dev_dl", "access_token": tok, "signature": "",
-	})
-	if _, ok := resp["resource_token"].(string); !ok {
-		t.Errorf("resource_token missing or wrong type")
-	}
-	// 客户端 ClientInit.java 第 205 行优先读 groups,fallback 才看 mirrors
-	groups, ok := resp["groups"].([]any)
-	if !ok {
-		t.Fatalf("groups should be array; got %T", resp["groups"])
-	}
-	// 至少要有主节点本地这一组(PrimaryResBaseURL 在测试 Handler 里注入了)
-	if len(groups) == 0 {
-		t.Fatalf("expected at least 1 group (主节点本地), got 0")
-	}
-	for _, g := range groups {
-		gObj := g.(map[string]any)
-		if _, ok := gObj["name"].(string); !ok {
-			t.Errorf("group.name should be string")
-		}
-		if _, ok := gObj["mirrors"].([]any); !ok {
-			t.Errorf("group.mirrors should be array")
-		}
-	}
-}
-
-// TestOnlineDownload_InlineFiles 验证管理员配的内联 files 清单能正确出现在
-// 响应里:mirrors 数组的对象项 + files 字段(可以是 [key_string] 或
-// [{key,size}],客户端两种都支持)。
-func TestOnlineDownload_InlineFiles(t *testing.T) {
-	h, st := newTestHandler(t)
-	srv := newRouter(h)
-
-	// 准备:两个组,每组一个 mirror,各带内联 files
-	err := st.MirrorsReplaceAll(context.Background(), []store.MirrorWithGroup{
-		{
-			GroupName: "线路A",
-			Mirror: store.Mirror{
-				Kind: "http", URL: "https://a.example.com/res/",
-				Files: jsonRaw(`[{"key":"data/main.bin","size":1024},{"key":"data/aux.bin","size":2048}]`),
-			},
-		},
-		{
-			GroupName: "线路B",
-			Mirror: store.Mirror{
-				Kind: "s3", URL: "https://s3.example.com",
-				Bucket: strPtr("res-bucket"), Region: strPtr("ap-east-1"),
-				// 这条没有 files → 客户端走 S3 XML 自发现
-			},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	tok := initAndGetToken(t, srv, "dev_inline")
-	resp := postJSON(t, srv, "/client/online-download", map[string]any{
-		"device_id": "dev_inline", "access_token": tok, "signature": "",
-	})
-
-	groups := resp["groups"].([]any)
-	// 至少 2 组(管理员配的)+ 1 组(主节点本地)
-	if len(groups) < 2 {
-		t.Fatalf("expected at least 2 admin groups, got %d", len(groups))
-	}
-
-	// 找"线路A"组,验证其内联 files
-	var aGroup map[string]any
-	for _, g := range groups {
-		obj := g.(map[string]any)
-		if obj["name"] == "线路A" {
-			aGroup = obj
-			break
-		}
-	}
-	if aGroup == nil {
-		t.Fatalf("线路A group not found in response, groups=%v", groups)
-	}
-	mirrors := aGroup["mirrors"].([]any)
-	if len(mirrors) != 1 {
-		t.Fatalf("线路A should have 1 mirror, got %d", len(mirrors))
-	}
-	// 应该是对象格式(因为带 files),不是字符串
-	mObj, ok := mirrors[0].(map[string]any)
-	if !ok {
-		t.Fatalf("mirror with files should be JSON object, got %T", mirrors[0])
-	}
-	if mObj["url"] != "https://a.example.com/res/" {
-		t.Errorf("mirror url mismatch: %v", mObj["url"])
-	}
-	files, ok := mObj["files"].([]any)
-	if !ok {
-		t.Fatalf("mirror.files should be array, got %T", mObj["files"])
-	}
-	if len(files) != 2 {
-		t.Errorf("expected 2 files, got %d", len(files))
-	}
-	// 第一个文件应该是 {key, size} 对象
-	f0 := files[0].(map[string]any)
-	if f0["key"] != "data/main.bin" {
-		t.Errorf("file[0].key: want data/main.bin, got %v", f0["key"])
-	}
-	if int64(f0["size"].(float64)) != 1024 {
-		t.Errorf("file[0].size: want 1024, got %v", f0["size"])
-	}
-
-	// "线路B"组:mirror 没 files,所以应该是字符串
-	var bGroup map[string]any
-	for _, g := range groups {
-		obj := g.(map[string]any)
-		if obj["name"] == "线路B" {
-			bGroup = obj
-			break
-		}
-	}
-	if bGroup == nil {
-		t.Fatalf("线路B group not found")
-	}
-	bMirrors := bGroup["mirrors"].([]any)
-	if _, isString := bMirrors[0].(string); !isString {
-		t.Errorf("线路B 没有 files 的 mirror 应当返回为字符串(让客户端走 S3 自发现),got %T", bMirrors[0])
-	}
-}
-
-// helpers for the inline-files test
-func jsonRaw(s string) json.RawMessage { return json.RawMessage(s) }
-func strPtr(s string) *string           { return &s }
-
-// ─────────────────────────────────────────────────────────────────────────
-// /client/offline-package — ClientInit.fetchOfflinePackage 第 273-279 行
-// ─────────────────────────────────────────────────────────────────────────
-
-func TestOfflinePackage_FieldNames(t *testing.T) {
-	h, st := newTestHandler(t)
-	srv := newRouter(h)
-	uploaded := time.Now().UnixMilli()
-	_ = st.OfflinePackageSet(context.Background(), store.OfflinePackage{
-		DownloadURL:    "https://offline.example.com/full.zip",
-		PackageVersion: "2.4.1",
-		SHA256:         "abc123",
-		Size:           12345,
-		UploadedAt:     &uploaded,
-	})
-	tok := initAndGetToken(t, srv, "dev_off")
-	resp := postJSON(t, srv, "/client/offline-package", map[string]any{
-		"device_id": "dev_off", "access_token": tok, "signature": "",
-	})
-	// 客户端 optString 的字段名(第 274-276 行)
-	cases := map[string]any{
-		"download_url":    "https://offline.example.com/full.zip",
-		"package_version": "2.4.1",
-		"sha256":          "abc123",
-	}
-	for k, want := range cases {
-		if resp[k] != want {
-			t.Errorf("offline.%s: want %v, got %v", k, want, resp[k])
-		}
-	}
-	// 旧字段名不应该再返回
-	for _, oldK := range []string{"url", "version"} {
-		if _, has := resp[oldK]; has {
-			t.Errorf("offline.%s should not be present (旧字段名)", oldK)
-		}
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// /client/heartbeat — ResourceFlow.HeartbeatSender 第 528-577 行
+// /client/heartbeat — 封禁 / 维护状态推送
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestHeartbeat_Ok(t *testing.T) {
@@ -1057,48 +666,6 @@ func TestHeartbeat_Ok(t *testing.T) {
 	})
 	if resp["action"] != "ok" {
 		t.Errorf("expected action=ok, got %v", resp["action"])
-	}
-}
-
-func TestHeartbeat_SwitchMirrors_AssignmentsShape(t *testing.T) {
-	h, _ := newTestHandler(t)
-	srv := newRouter(h)
-	tok := initAndGetToken(t, srv, "dev_sw")
-	// 入队一条换线指令
-	h.Heartbeats.QueueSwitch("dev_sw", &SwitchAssignment{
-		MirrorAssignments: map[string]string{
-			"a.bin": "https://m1/",
-			"b.bin": "https://m1/",
-			"c.bin": "https://m2/",
-		},
-		Message: "切到 m1/m2",
-	})
-	resp := postJSON(t, srv, "/client/heartbeat", map[string]any{
-		"device_id": "dev_sw", "access_token": tok, "signature": "",
-		"files": []map[string]any{{"name": "a.bin", "status": "downloading"}},
-	})
-	if resp["action"] != "switch_mirrors" {
-		t.Fatalf("expected switch_mirrors, got %v", resp["action"])
-	}
-	// 客户端期望 `assignments: [{mirror, files:[name]}]`,不是 `mirror_assignments` map
-	if _, badShape := resp["mirror_assignments"]; badShape {
-		t.Errorf("response should NOT contain mirror_assignments (老字段名),客户端读不到")
-	}
-	arr, ok := resp["assignments"].([]any)
-	if !ok {
-		t.Fatalf("assignments should be array, got %T", resp["assignments"])
-	}
-	if len(arr) != 2 {
-		t.Errorf("expected 2 mirror groups, got %d", len(arr))
-	}
-	for _, e := range arr {
-		obj := e.(map[string]any)
-		if _, ok := obj["mirror"].(string); !ok {
-			t.Errorf("each assignment needs `mirror` string field, got %v", obj)
-		}
-		if _, ok := obj["files"].([]any); !ok {
-			t.Errorf("each assignment needs `files` array, got %v", obj["files"])
-		}
 	}
 }
 
@@ -1119,7 +686,7 @@ func TestHeartbeat_Ban_FieldsAtTopLevel(t *testing.T) {
 	if resp["action"] != "ban" {
 		t.Fatalf("expected action=ban, got %v", resp["action"])
 	}
-	// 客户端读顶层 reason / expire_time(秒)—— ResourceFlow.java 第 566-575 行
+	// reason / expire_time(秒)平铺在顶层,不嵌套在 ban 对象里
 	if resp["reason"] != "脚本检测" {
 		t.Errorf("expected reason='脚本检测' at top level, got %v", resp["reason"])
 	}
@@ -1137,35 +704,162 @@ func TestHeartbeat_Ban_FieldsAtTopLevel(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// /client/hot-update — ClientInit.fetchHotUpdate 第 293-310 行
+// 新协议:版本协商 / asset_auth 信封 / 场景清单
 // ─────────────────────────────────────────────────────────────────────────
 
-func TestHotUpdate_BundleFields(t *testing.T) {
-	h, st := newTestHandler(t)
+// 老客户端不上报 protocol_versions,应按当前版本放行(向后兼容)。
+func TestInit_ProtocolNegotiation_OmittedDefaultsToCurrent(t *testing.T) {
+	h, _ := newTestHandler(t)
 	srv := newRouter(h)
-	tok := initAndGetToken(t, srv, "dev_hot")
-	now := time.Now().UnixMilli()
-	_ = st.HotBundleSet(context.Background(), store.HotBundle{
-		Kind: "js", Version: 42, SHA256: "deadbeef",
-		DownloadURL: "https://hot.example.com/js.zip", Size: 999, PublishedAt: &now,
+	resp := postJSON(t, srv, "/client/init", map[string]any{
+		"version": "1.0.0", "device_id": "dev_pv_omit", "signature": "", "channel": "normal",
 	})
-	resp := postJSON(t, srv, "/client/hot-update", map[string]any{
-		"device_id": "dev_hot", "access_token": tok, "signature": "",
+	if got := resp["protocol_version"]; got != float64(ProtocolVersion) {
+		t.Errorf("protocol_version = %v, want %d", got, ProtocolVersion)
+	}
+}
+
+// 客户端支持多版本时,应在交集中选出服务端实现的那个。
+func TestInit_ProtocolNegotiation_PicksIntersection(t *testing.T) {
+	h, _ := newTestHandler(t)
+	srv := newRouter(h)
+	resp := postJSON(t, srv, "/client/init", map[string]any{
+		"version": "1.0.0", "device_id": "dev_pv_multi", "signature": "", "channel": "normal",
+		"protocol_versions": []int{99, ProtocolVersion, 100},
 	})
-	js, ok := resp["js"].(map[string]any)
+	if got := resp["protocol_version"]; got != float64(ProtocolVersion) {
+		t.Errorf("protocol_version = %v, want %d", got, ProtocolVersion)
+	}
+}
+
+// 无交集必须**握手失败**,不得降级——降级会让双方以不同的协议理解同一份数据。
+func TestInit_ProtocolNegotiation_NoIntersectionFails(t *testing.T) {
+	h, _ := newTestHandler(t)
+	srv := newRouter(h)
+	body, _ := json.Marshal(map[string]any{
+		"version": "1.0.0", "device_id": "dev_pv_bad", "signature": "", "channel": "normal",
+		"protocol_versions": []int{98, 99},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/client/init", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("期望 HTTP 400, 实际 %d: %s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	if out["error"] != "protocol_version_unsupported" {
+		t.Errorf("error = %v, want protocol_version_unsupported", out["error"])
+	}
+}
+
+// asset_auth.token 必须与 resource_token 的签名机制一致(可被服务端自行验证)。
+func TestInit_AssetAuthTokenIsVerifiable(t *testing.T) {
+	h, _ := newTestHandler(t)
+	srv := newRouter(h)
+	resp := postJSON(t, srv, "/client/init", map[string]any{
+		"version": "1.0.0", "device_id": "dev_aa", "signature": "", "channel": "normal",
+	})
+	aa, ok := resp["asset_auth"].(map[string]any)
 	if !ok {
-		t.Fatalf("js section missing")
+		t.Fatalf("asset_auth 缺失")
 	}
-	// 客户端字段名(第 297-300 行)
-	want := map[string]any{
-		"version":      float64(42),
-		"sha256":       "deadbeef",
-		"download_url": "https://hot.example.com/js.zip",
-		"size":         float64(999),
+	tok, _ := aa["token"].(string)
+	want, _ := h.signResourceToken("dev_aa")
+	if tok == "" || tok != want {
+		t.Errorf("asset_auth.token 与 signResourceToken 不一致\n got=%q\nwant=%q", tok, want)
 	}
-	for k, v := range want {
-		if js[k] != v {
-			t.Errorf("hot.js.%s: want %v, got %v", k, v, js[k])
+}
+
+// 场景清单未接入构建管线时必须**明确报错**,而不是返回空清单——
+// 空清单会被客户端理解为"该场景无需任何资产",从而静默进入残缺场景。
+func TestSceneManifest_UnavailableWhenNotWired(t *testing.T) {
+	h, _ := newTestHandler(t)
+	srv := newRouter(h)
+	triple := authTripleFor(t, h, srv, "dev_sm_off")
+	body := map[string]any{"scene_id": "quest_101101"}
+	for k, v := range triple {
+		body[k] = v
+	}
+	code, out := postJSONRaw(t, srv, "/client/scene-manifest", body)
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("期望 HTTP 503, 实际 %d: %v", code, out)
+	}
+	if out["error"] != "manifest_unavailable" {
+		t.Errorf("error = %v, want manifest_unavailable", out["error"])
+	}
+}
+
+func TestSceneManifest_RequiresSceneID(t *testing.T) {
+	h, _ := newTestHandler(t)
+	h.SceneAssets = func(context.Context, string) ([]string, error) { return nil, nil }
+	srv := newRouter(h)
+	triple := authTripleFor(t, h, srv, "dev_sm_noid")
+	code, out := postJSONRaw(t, srv, "/client/scene-manifest", triple)
+	if code != http.StatusBadRequest {
+		t.Fatalf("期望 HTTP 400, 实际 %d: %v", code, out)
+	}
+	if out["error"] != "missing_scene_id" {
+		t.Errorf("error = %v, want missing_scene_id", out["error"])
+	}
+}
+
+func TestSceneManifest_UnknownSceneIs404(t *testing.T) {
+	h, _ := newTestHandler(t)
+	h.SceneAssets = func(context.Context, string) ([]string, error) { return nil, nil }
+	srv := newRouter(h)
+	triple := authTripleFor(t, h, srv, "dev_sm_404")
+	body := map[string]any{"scene_id": "nope"}
+	for k, v := range triple {
+		body[k] = v
+	}
+	code, out := postJSONRaw(t, srv, "/client/scene-manifest", body)
+	if code != http.StatusNotFound {
+		t.Fatalf("期望 HTTP 404, 实际 %d: %v", code, out)
+	}
+}
+
+// 开发期最小形状:{scene_id, assets:[{path}]}。
+// R2 定稿后按扩展性规则**新增**字段(hash/size),本断言不应因此失败。
+func TestSceneManifest_MinimalShape(t *testing.T) {
+	h, _ := newTestHandler(t)
+	h.SceneAssets = func(_ context.Context, id string) ([]string, error) {
+		if id != "quest_101101" {
+			return nil, nil
 		}
+		return []string{"resource/image_native/a.png", "resource/sound_native/b.hca"}, nil
+	}
+	srv := newRouter(h)
+	triple := authTripleFor(t, h, srv, "dev_sm_ok")
+	body := map[string]any{"scene_id": "quest_101101"}
+	for k, v := range triple {
+		body[k] = v
+	}
+	resp := postJSON(t, srv, "/client/scene-manifest", body)
+	if resp["scene_id"] != "quest_101101" {
+		t.Errorf("scene_id = %v", resp["scene_id"])
+	}
+	assets, ok := resp["assets"].([]any)
+	if !ok || len(assets) != 2 {
+		t.Fatalf("assets 应为 2 项数组, got %v", resp["assets"])
+	}
+	first, _ := assets[0].(map[string]any)
+	if first["path"] != "resource/image_native/a.png" {
+		t.Errorf("assets[0].path = %v", first["path"])
+	}
+}
+
+// 精简版心跳不再承载下载进度与换线指令,正常情况只回 action=ok。
+func TestHeartbeat_SlimOk(t *testing.T) {
+	h, _ := newTestHandler(t)
+	srv := newRouter(h)
+	triple := authTripleFor(t, h, srv, "dev_hb_slim")
+	resp := postJSON(t, srv, "/client/heartbeat", triple)
+	if resp["action"] != "ok" {
+		t.Errorf("action = %v, want ok", resp["action"])
+	}
+	if _, ok := resp["assignments"]; ok {
+		t.Errorf("精简版心跳不应再下发 assignments(换线指令)")
 	}
 }
