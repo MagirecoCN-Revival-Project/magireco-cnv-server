@@ -36,6 +36,22 @@
 | `CNV_WEB_DIR` | `./web` | 前端静态目录。**面板**用它托管全部人类前端（登录/注册/管理后台/用户中心）；**业务节点**仅在未接入面板（`CNV_PANEL_PUBLIC_URL` 留空）时回落用它服务客户端入口页 |
 | `CNV_DIRECTORY_FILE` | — | 已签名节点目录 JSON 文件路径；设置后随 `/client/init` 下发给客户端。**生产必配**，见下 |
 | `CNV_DEV_MODE` 🔒 | `false` | `true` 时允许下发协议的**开发期临时值**。**生产必须为 false**，见下 |
+| `CNV_BOOTSTRAP_ENDPOINT` | — | Android 底包引导端点 `/magica/api/snaa` 下发的业务服务器地址。**留空 = 本节点不接管 Android 底包**，该端点返回 503。见下 |
+| `CNV_BOOTSTRAP_MAX_THREADS` | `4` | 下发给底包的并发下载线程数建议值 |
+| `CNV_BOOTSTRAP_VERSION` | `0` | 当前底包版本号（`r128` → `128`），底包据此自行决定是否提示更新 |
+
+### `CNV_BOOTSTRAP_ENDPOINT`：Android 底包接管开关
+
+只有要接管 Android 底包（`io.kamihama.totentanz` 系）时才需要配置。
+Web 客户端不经过这个端点，留空即可。
+
+配置后 `POST /magica/api/snaa` 会下发该地址，底包用它替换引擎内的 `UrlConfig`。
+协议细节见 [客户端握手协议 · Android 底包引导端点](../architecture/client-protocol#post-magica-api-snaa-android-底包引导端点)。
+
+::: warning 留空与配错的区别是可见的
+留空时端点返回 **503 + `bootstrap_not_configured`**，而不是 200 + 空 `endpoint`。
+后者会让底包弹 `Empty endpoint URL`，把一次配置缺失误报成客户端故障。
+:::
 
 ### `CNV_DEV_MODE`：生产守卫 🔒
 

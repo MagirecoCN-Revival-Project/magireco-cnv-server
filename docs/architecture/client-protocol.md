@@ -31,6 +31,78 @@ flowchart TB
 既没有资源准备阶段,也没有批量下载端点——完整资源十几 GB,浏览器装不下。
 :::
 
+## `POST /magica/api/snaa`:Android 底包引导端点
+
+与 `/client/*` 是**两套独立的东西**,不要混淆:
+
+- `/client/init` 是**本项目自有客户端**的握手,协商协议版本、签发 `access_token`;
+- `/magica/api/snaa` 是 **Android 底包**(`io.kamihama.totentanz` 系)启动时问
+  "真正的业务服务器在哪"的引导端点,路径由底包写死,**不可改**。
+
+底包的调用链(据 1.2.0_r128 反编译确认):
+
+```
+libuwasa.so ──JNI──▶ io/kamihama/magianative/RestClient.GetEndpoint(int)
+                     POST /magica/api/snaa   {"version": 128}
+                     ◀── {"message":"snaa","response":{...},"status":200}
+libuwasa.so hook UrlConfig::resource(Resource::Type),用返回的 endpoint 供给引擎
+```
+
+**请求**
+
+```json
+{ "version": 128 }
+```
+
+`version` 是底包自己的打包版本号(`r128` → `128`),与游戏版本(3.1.9)无关,
+也与 `/client/init` 的 `protocol_versions` 无关。未知字段一律忽略。
+
+**响应**
+
+```json
+{
+  "message": "snaa",
+  "response": {
+    "endpoint": "https://example.com/en",
+    "max_threads": 4,
+    "version": 128
+  },
+  "status": 200
+}
+```
+
+::: danger 线格式已被已分发的底包写死
+字段名与嵌套层级**不可改**——底包已经装在玩家设备上,改了等于把老客户端全部踢下线
+(铁律四)。`internal/api/client/bootstrap_test.go` 锁住了这套形状。
+:::
+
+### 为什么任何情况下都不能返回空体
+
+底包侧的失败提示直接由响应决定(字符串取自 `libuwasa.so`):
+
+| 服务端行为 | 玩家看到的弹窗 |
+|---|---|
+| 响应体长度为 0 | `Unable to connect to the server. Restart the app to retry. (Response length: 0)` |
+| 缺 `endpoint` 字段 | `No endpoint URL found in JSON response.` |
+| `endpoint` 为空串 | `Empty endpoint URL.` |
+
+这三种都是**无信息报错**——玩家和运维都无法从中判断是配置问题还是网络问题。
+因此本端点在拒绝服务时也必须返回结构完整的 JSON:未配置 `CNV_BOOTSTRAP_ENDPOINT`
+时返回 **503 + 明确错误码** `bootstrap_not_configured`,而不是 200 + 空 `endpoint`。
+
+### 不做版本闸门是有意的
+
+真实底包对任意 `version` 都返回同一个 `endpoint`,由客户端自己比对
+`response.version` 决定是否提示更新。服务端擅自按版本拒答,会让老客户端
+连"该更新了"这个提示都收不到,直接卡在"连不上服务器"。
+
+因此服务端只对 `version` 做合理性上界校验(越界归零)后回显,**不据此拒绝服务**。
+
+### 鉴权
+
+本端点**无鉴权**:它必须在登录之前就能应答,否则客户端根本找不到登录接口在哪。
+正因如此,它只下发"去哪台服务器"这一个公开事实,不接受也不回显任何账号相关信息。
+
 ## `/client/init` 请求
 
 ```json

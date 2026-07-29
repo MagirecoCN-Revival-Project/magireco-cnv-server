@@ -289,9 +289,14 @@ func runBusiness(ctx context.Context, cfg *config.Config, dirJSON json.RawMessag
 		// SceneAssets 尚未接入构建管线：场景清单的正式形状是待决项 R2。
 		// nil = 该功能未启用，/client/scene-manifest 明确返回 503 而非空清单——
 		// 空清单会被客户端理解为"该场景无需任何资产",从而静默进入残缺场景。
-		SceneAssets: nil,
+		SceneAssets:         nil,
+		BootstrapEndpoint:   cfg.BootstrapEndpoint,
+		BootstrapMaxThreads: cfg.BootstrapMaxThreads,
+		BootstrapVersion:    cfg.BootstrapVersion,
 	}
 	r.Route("/client", clientH.Routes)
+	// Android 底包的引导端点。挂在 /magica/api 下是底包写死的路径,不可改。
+	r.Route("/magica/api", clientH.MagicaRoutes)
 
 	mailer := email.New(email.Config{
 		Host:     cfg.SMTPHost,

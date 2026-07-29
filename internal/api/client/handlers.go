@@ -66,6 +66,15 @@ type Handler struct {
 	// 节点从 CNV_DIRECTORY_FILE 加载并注入。
 	DirectoryJSON json.RawMessage
 
+	// BootstrapEndpoint 是 /magica/api/snaa 下发给 Android 底包的业务服务器地址。
+	// 空串 = 本节点不接管 Android 底包,该端点返回 503。
+	// 由 CNV_BOOTSTRAP_ENDPOINT 注入,源码不得硬编码(铁律二)。
+	BootstrapEndpoint string
+	// BootstrapMaxThreads 下发给底包的并发下载线程数建议值。
+	BootstrapMaxThreads int
+	// BootstrapVersion 当前底包版本号(r128 → 128),客户端据此自行判断是否提示更新。
+	BootstrapVersion int
+
 	// SceneAssets 返回进入某场景所需的资产相对路径列表。
 	// 返回 nil 表示未知场景（客户端得到 404）。nil 函数 = 场景清单功能未启用。
 	SceneAssets func(ctx context.Context, sceneID string) ([]string, error)

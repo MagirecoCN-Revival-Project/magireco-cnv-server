@@ -42,6 +42,16 @@ type Config struct {
 	// 泄进生产(不显眼)。
 	DevMode bool
 
+	// BootstrapEndpoint 下发给 Android 底包的业务服务器地址
+	// (CNV_BOOTSTRAP_ENDPOINT)。空 = 本节点不接管 Android 底包,
+	// /magica/api/snaa 返回 503。源码不得硬编码(铁律二)。
+	BootstrapEndpoint string
+	// BootstrapMaxThreads 下发给底包的并发下载线程数建议值
+	// (CNV_BOOTSTRAP_MAX_THREADS,默认 4)。
+	BootstrapMaxThreads int
+	// BootstrapVersion 当前底包版本号(CNV_BOOTSTRAP_VERSION,r128 → 128)。
+	BootstrapVersion int
+
 	// 业务节点专用
 	DBURL               string        // postgres://...
 	ResourceTokenSecret []byte        // CNV_RESOURCE_TOKEN_SECRET, resource_token 的 HMAC 签名根密钥;不设则首次启动自动生成并持久化
@@ -82,44 +92,47 @@ type Config struct {
 // 调用方根据 NodeRole 自行判断需要哪些字段。
 func LoadFromEnv() (*Config, error) {
 	c := &Config{
-		Addr:              envOr("CNV_ADDR", ":8080"),
-		WebDir:            envOr("CNV_WEB_DIR", "./web"),
-		PrimaryResDir:     os.Getenv("CNV_PRIMARY_RES_DIR"),
-		OfflineDir:        envOr("CNV_OFFLINE_DIR", "./data/offline"),
-		OfflineURLPath:    envOr("CNV_OFFLINE_URL_PATH", "/dl/offline-pack"),
-		HotUpdateDir:      envOr("CNV_HOTUPDATE_DIR", "./data/hotupdate"),
-		HotUpdateURLPath:  envOr("CNV_HOTUPDATE_URL_PATH", "/dl/hot-update"),
-		HotUpdateMaxBytes: int64(intOr("CNV_HOTUPDATE_MAX_MB", 1024)) << 20,
-		BodyLimitMaxBytes: int64(intOr("CNV_BODY_LIMIT_MB", 8)) << 20,
-		PrimaryResPath:    envOr("CNV_PRIMARY_RES_PATH", "/res"),
-		TrustProxy:        os.Getenv("CNV_TRUST_PROXY"),
-		TLSCert:           os.Getenv("CNV_TLS_CERT"),
-		TLSKey:            os.Getenv("CNV_TLS_KEY"),
-		SignatureAllowed:  splitCSV(os.Getenv("CNV_SIGNATURE_WHITELIST")),
-		ChannelAllowed:    splitCSV(os.Getenv("CNV_CHANNEL_WHITELIST")),
-		RequireSignature:  boolOr("CNV_REQUIRE_SIGNATURE", false),
-		DevMode:           boolOr("CNV_DEV_MODE", false),
-		DBURL:             os.Getenv("CNV_DB_URL"),
-		CapWorkerURL:      os.Getenv("CNV_CAP_WORKER_URL"),
-		ClientSessionTTL:  durOr("CNV_CLIENT_SESSION_TTL", 7*24*time.Hour),
-		AdminSessionTTL:   durOr("CNV_ADMIN_SESSION_TTL", 7*24*time.Hour),
-		AccountSessionTTL: durOr("CNV_ACCOUNT_SESSION_TTL", 30*24*time.Hour),
-		NodeRole:          envOr("CNV_NODE_ROLE", "business"),
-		NodeID:            envOr("CNV_NODE_ID", hostname()),
-		NodeKeyFile:       envOr("CNV_NODE_KEY_FILE", "./data/node.key"),
-		ControlAddr:       envOr("CNV_CONTROL_ADDR", "127.0.0.1:9090"),
-		DirectoryFile:     os.Getenv("CNV_DIRECTORY_FILE"),
-		PublicURL:         os.Getenv("CNV_PUBLIC_URL"),
-		PanelPublicURL:    strings.TrimRight(os.Getenv("CNV_PANEL_PUBLIC_URL"), "/"),
-		PanelDBFile:       envOr("CNV_PANEL_DB_FILE", "./data/panel.db"),
-		PanelKey:          os.Getenv("CNV_PANEL_KEY"),
-		SkipMigrate:       boolOr("CNV_SKIP_MIGRATE", false),
-		SMTPHost:          os.Getenv("CNV_SMTP_HOST"),
-		SMTPPort:          envOr("CNV_SMTP_PORT", "587"),
-		SMTPUser:          os.Getenv("CNV_SMTP_USER"),
-		SMTPPass:          os.Getenv("CNV_SMTP_PASS"),
-		SMTPFrom:          os.Getenv("CNV_SMTP_FROM"),
-		SMTPFromName:      envOr("CNV_SMTP_FROM_NAME", "魔法纪录复兴计划"),
+		Addr:                envOr("CNV_ADDR", ":8080"),
+		WebDir:              envOr("CNV_WEB_DIR", "./web"),
+		PrimaryResDir:       os.Getenv("CNV_PRIMARY_RES_DIR"),
+		OfflineDir:          envOr("CNV_OFFLINE_DIR", "./data/offline"),
+		OfflineURLPath:      envOr("CNV_OFFLINE_URL_PATH", "/dl/offline-pack"),
+		HotUpdateDir:        envOr("CNV_HOTUPDATE_DIR", "./data/hotupdate"),
+		HotUpdateURLPath:    envOr("CNV_HOTUPDATE_URL_PATH", "/dl/hot-update"),
+		HotUpdateMaxBytes:   int64(intOr("CNV_HOTUPDATE_MAX_MB", 1024)) << 20,
+		BodyLimitMaxBytes:   int64(intOr("CNV_BODY_LIMIT_MB", 8)) << 20,
+		PrimaryResPath:      envOr("CNV_PRIMARY_RES_PATH", "/res"),
+		TrustProxy:          os.Getenv("CNV_TRUST_PROXY"),
+		TLSCert:             os.Getenv("CNV_TLS_CERT"),
+		TLSKey:              os.Getenv("CNV_TLS_KEY"),
+		SignatureAllowed:    splitCSV(os.Getenv("CNV_SIGNATURE_WHITELIST")),
+		ChannelAllowed:      splitCSV(os.Getenv("CNV_CHANNEL_WHITELIST")),
+		RequireSignature:    boolOr("CNV_REQUIRE_SIGNATURE", false),
+		DevMode:             boolOr("CNV_DEV_MODE", false),
+		BootstrapEndpoint:   strings.TrimSpace(os.Getenv("CNV_BOOTSTRAP_ENDPOINT")),
+		BootstrapMaxThreads: intOr("CNV_BOOTSTRAP_MAX_THREADS", 4),
+		BootstrapVersion:    intOr("CNV_BOOTSTRAP_VERSION", 0),
+		DBURL:               os.Getenv("CNV_DB_URL"),
+		CapWorkerURL:        os.Getenv("CNV_CAP_WORKER_URL"),
+		ClientSessionTTL:    durOr("CNV_CLIENT_SESSION_TTL", 7*24*time.Hour),
+		AdminSessionTTL:     durOr("CNV_ADMIN_SESSION_TTL", 7*24*time.Hour),
+		AccountSessionTTL:   durOr("CNV_ACCOUNT_SESSION_TTL", 30*24*time.Hour),
+		NodeRole:            envOr("CNV_NODE_ROLE", "business"),
+		NodeID:              envOr("CNV_NODE_ID", hostname()),
+		NodeKeyFile:         envOr("CNV_NODE_KEY_FILE", "./data/node.key"),
+		ControlAddr:         envOr("CNV_CONTROL_ADDR", "127.0.0.1:9090"),
+		DirectoryFile:       os.Getenv("CNV_DIRECTORY_FILE"),
+		PublicURL:           os.Getenv("CNV_PUBLIC_URL"),
+		PanelPublicURL:      strings.TrimRight(os.Getenv("CNV_PANEL_PUBLIC_URL"), "/"),
+		PanelDBFile:         envOr("CNV_PANEL_DB_FILE", "./data/panel.db"),
+		PanelKey:            os.Getenv("CNV_PANEL_KEY"),
+		SkipMigrate:         boolOr("CNV_SKIP_MIGRATE", false),
+		SMTPHost:            os.Getenv("CNV_SMTP_HOST"),
+		SMTPPort:            envOr("CNV_SMTP_PORT", "587"),
+		SMTPUser:            os.Getenv("CNV_SMTP_USER"),
+		SMTPPass:            os.Getenv("CNV_SMTP_PASS"),
+		SMTPFrom:            os.Getenv("CNV_SMTP_FROM"),
+		SMTPFromName:        envOr("CNV_SMTP_FROM_NAME", "魔法纪录复兴计划"),
 	}
 	if v := os.Getenv("CNV_RESOURCE_TOKEN_SECRET"); v != "" {
 		c.ResourceTokenSecret = []byte(v)
