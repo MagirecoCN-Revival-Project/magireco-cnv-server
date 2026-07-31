@@ -11,7 +11,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"magirecocn-revival/cnv-server/internal/auth"
+	"magirecocn-revival/api-server/internal/auth"
 )
 
 // CommandFunc 处理一条指令，返回结果（将被 JSON 编码进 resp.payload）或错误。

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"magirecocn-revival/cnv-server/internal/directory"
-	"magirecocn-revival/cnv-server/internal/totentanz"
+	"magirecocn-revival/api-server/internal/directory"
+	"magirecocn-revival/api-server/internal/totentanz"
 )
 
 // 能力隔离必须在**签发时**挡住违规目录：客户端只验签名，不会质疑能力分配是否合理，

@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"magirecocn-revival/cnv-server/internal/api/respond"
-	"magirecocn-revival/cnv-server/internal/store"
+	"magirecocn-revival/api-server/internal/api/respond"
+	"magirecocn-revival/api-server/internal/store"
 )
 
 // 热更新包发布:两种来源,殊途同归——都由服务端**自托管**(落盘到 CNV_HOTUPDATE_DIR、

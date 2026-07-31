@@ -1,4 +1,4 @@
-module magirecocn-revival/cnv-server
+module magirecocn-revival/api-server
 
 go 1.25.0
 

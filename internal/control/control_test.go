@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"magirecocn-revival/cnv-server/internal/control"
+	"magirecocn-revival/api-server/internal/control"
 )
 
 func wsURL(ts *httptest.Server) string {

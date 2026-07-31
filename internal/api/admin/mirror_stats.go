@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"magirecocn-revival/cnv-server/internal/store"
+	"magirecocn-revival/api-server/internal/store"
 )
 
 // MirrorTracker 追踪每个镜像的瞬时速度与累计流量。

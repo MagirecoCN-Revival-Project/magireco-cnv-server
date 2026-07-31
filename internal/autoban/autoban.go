@@ -24,7 +24,7 @@ import (
 	"sync"
 	"time"
 
-	"magirecocn-revival/cnv-server/internal/store"
+	"magirecocn-revival/api-server/internal/store"
 )
 
 // ConfigKey 是 config 表里存自动封禁阈值的键名。

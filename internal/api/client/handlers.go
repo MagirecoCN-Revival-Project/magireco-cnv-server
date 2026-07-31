@@ -36,12 +36,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"magirecocn-revival/cnv-server/internal/api/respond"
-	"magirecocn-revival/cnv-server/internal/auth"
-	"magirecocn-revival/cnv-server/internal/autoban"
-	"magirecocn-revival/cnv-server/internal/middleware"
-	"magirecocn-revival/cnv-server/internal/store"
-	"magirecocn-revival/cnv-server/internal/totentanz"
+	"magirecocn-revival/api-server/internal/api/respond"
+	"magirecocn-revival/api-server/internal/auth"
+	"magirecocn-revival/api-server/internal/autoban"
+	"magirecocn-revival/api-server/internal/middleware"
+	"magirecocn-revival/api-server/internal/store"
+	"magirecocn-revival/api-server/internal/totentanz"
 )
 
 // Handler 把 store 与配置注入到 HTTP handler。

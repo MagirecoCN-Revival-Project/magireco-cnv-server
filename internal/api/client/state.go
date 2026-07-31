@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"magirecocn-revival/cnv-server/internal/store"
-	"magirecocn-revival/cnv-server/internal/totentanz"
+	"magirecocn-revival/api-server/internal/store"
+	"magirecocn-revival/api-server/internal/totentanz"
 )
 
 // ── config 包装(读 KV 表)────────────────────────────────────────────────

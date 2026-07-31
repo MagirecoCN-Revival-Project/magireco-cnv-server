@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"magirecocn-revival/cnv-server/internal/totentanz"
+	"magirecocn-revival/api-server/internal/totentanz"
 )
 
 // okBody 复刻上游真实响应的信封形状。

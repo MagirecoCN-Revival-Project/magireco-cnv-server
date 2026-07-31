@@ -15,13 +15,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"magirecocn-revival/cnv-server/internal/api/respond"
-	"magirecocn-revival/cnv-server/internal/auth"
-	"magirecocn-revival/cnv-server/internal/autoban"
-	"magirecocn-revival/cnv-server/internal/capworker"
-	"magirecocn-revival/cnv-server/internal/email"
-	"magirecocn-revival/cnv-server/internal/middleware"
-	"magirecocn-revival/cnv-server/internal/store"
+	"magirecocn-revival/api-server/internal/api/respond"
+	"magirecocn-revival/api-server/internal/auth"
+	"magirecocn-revival/api-server/internal/autoban"
+	"magirecocn-revival/api-server/internal/capworker"
+	"magirecocn-revival/api-server/internal/email"
+	"magirecocn-revival/api-server/internal/middleware"
+	"magirecocn-revival/api-server/internal/store"
 )
 
 var emailRE = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)

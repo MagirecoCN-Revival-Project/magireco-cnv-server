@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"magirecocn-revival/cnv-server/internal/panelstore"
+	"magirecocn-revival/api-server/internal/panelstore"
 )
 
 func TestConnectOrigin(t *testing.T) {

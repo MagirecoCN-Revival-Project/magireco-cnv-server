@@ -7,7 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"magirecocn-revival/cnv-server/internal/control"
+	"magirecocn-revival/api-server/internal/control"
 )
 
 // statusSnapshot 是只读状态页对外暴露的快照。

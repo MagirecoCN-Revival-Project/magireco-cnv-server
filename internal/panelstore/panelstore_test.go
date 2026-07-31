@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"magirecocn-revival/cnv-server/internal/panelstore"
+	"magirecocn-revival/api-server/internal/panelstore"
 )
 
 func openTest(t *testing.T) *panelstore.Store {

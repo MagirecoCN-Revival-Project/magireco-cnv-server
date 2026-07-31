@@ -1,7 +1,7 @@
 # CLAUDE.md — 项目须知（AI 协作者必读）
 
 > 本文件在每次会话开始时被自动载入。这里的约定具有**强制性**。
-> 本仓库是**服务端**（`magireco-cnv-server`）：主节点（API／账号／存档／握手）与
+> 本仓库是**服务端**（`magirecocn-api-server`）：主节点（API／账号／存档／握手）与
 > 边缘节点（静态资产分发）。客户端在 `magireco-web-client` 与 `magireco-cnv-client`，
 > 各自的 `.claude/CLAUDE.md` 只约束各自仓库，与本文件互不覆盖。
 
@@ -185,7 +185,7 @@
 
 ## CI 触发规则
 
-三个 workflow 都带**仓库名白名单**（`MagirecoCN-Revival-Project/magireco-cnv-server`），
+三个 workflow 都带**仓库名白名单**（`MagirecoCN-Revival-Project/magirecocn-api-server`），
 fork 后不会自动跑。改仓库名时必须同步这个白名单，否则 CI 会自我禁用。
 
 | workflow | 触发 |

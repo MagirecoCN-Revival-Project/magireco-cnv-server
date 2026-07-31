@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"time"
 
-	"magirecocn-revival/cnv-server/internal/api/client"
-	"magirecocn-revival/cnv-server/internal/packer"
-	"magirecocn-revival/cnv-server/internal/store"
+	"magirecocn-revival/api-server/internal/api/client"
+	"magirecocn-revival/api-server/internal/packer"
+	"magirecocn-revival/api-server/internal/store"
 )
 
 // Config 各定时任务的运行间隔(毫秒)。

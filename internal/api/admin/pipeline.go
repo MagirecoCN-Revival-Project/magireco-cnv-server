@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"magirecocn-revival/cnv-server/internal/api/respond"
+	"magirecocn-revival/api-server/internal/api/respond"
 )
 
 // pipelineCfg は GitHub Release → S3 → CDN 自動同期パイプラインの設定。

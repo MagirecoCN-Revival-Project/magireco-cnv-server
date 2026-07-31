@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"magirecocn-revival/cnv-server/internal/control"
-	"magirecocn-revival/cnv-server/internal/panelstore"
+	"magirecocn-revival/api-server/internal/control"
+	"magirecocn-revival/api-server/internal/panelstore"
 )
 
 // nodeState 缓存单个节点的最新遥测与连接状态。

@@ -6,7 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"magirecocn-revival/cnv-server/internal/api/respond"
+	"magirecocn-revival/api-server/internal/api/respond"
 )
 
 // ── /magica/api/snaa ────────────────────────────────────────────────────

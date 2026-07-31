@@ -1,7 +1,7 @@
 name: 📊 提交依赖图谱
 
 # ╔════════════════════════════════════════════════════════════════════╗
-# ║   magireco-cnv-server  ——  Go 依赖图谱提交                           ║
+# ║   magirecocn-api-server  ——  Go 依赖图谱提交                           ║
 # ╠════════════════════════════════════════════════════════════════════╣
 # ║                                                                    ║
 # ║ 用途                                                                ║
@@ -51,7 +51,7 @@ jobs:
           python3 <<'SCRIPT_END'
           import os, sys
 
-          ALLOWED = {"MagirecoCN-Revival-Project/magireco-cnv-server"}
+          ALLOWED = {"MagirecoCN-Revival-Project/magirecocn-api-server"}
           repo = os.environ.get("REPO", "")
 
           if repo not in ALLOWED:

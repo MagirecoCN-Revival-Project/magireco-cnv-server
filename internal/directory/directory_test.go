@@ -6,7 +6,7 @@ import (
 	"math/big"
 	"testing"
 
-	"magirecocn-revival/cnv-server/internal/directory"
+	"magirecocn-revival/api-server/internal/directory"
 )
 
 func sampleDir() *directory.Directory {

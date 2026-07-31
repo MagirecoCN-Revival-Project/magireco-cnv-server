@@ -5,8 +5,8 @@
 ## 1. 拿到代码
 
 ```bash
-git clone https://github.com/magirecocn-revival-project/magireco-cnv-server.git
-cd magireco-cnv-server
+git clone https://github.com/magirecocn-revival-project/magirecocn-api-server.git
+cd magirecocn-api-server
 go mod download
 ```
 
@@ -160,7 +160,7 @@ go run ./cmd/node
   一行命令在线部署（无需 clone 仓库，二进制从 Release 自动下载）：
 
   ```bash
-  sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magireco-cnv-server/main/deploy/install.sh | bash"
+  sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magirecocn-api-server/main/deploy/install.sh | bash"
   ```
 
   弹出交互菜单选 `panel` / `node-business` / `node-edge`，脚本把二进制、systemd unit、`.env`、用户、目录、logrotate 一次性下发。

@@ -10,8 +10,8 @@
 # ------------------------------------------------------------------------------
 # 入口模式:
 #   远程一行(仿 MCSManager 风格,无需 clone 仓库):
-#     sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magireco-cnv-server/main/deploy/install.sh | bash"
-#     sudo su -c "curl -fsSL https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magireco-cnv-server/main/deploy/install.sh | bash -s -- --role panel"
+#     sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magirecocn-api-server/main/deploy/install.sh | bash"
+#     sudo su -c "curl -fsSL https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magirecocn-api-server/main/deploy/install.sh | bash -s -- --role panel"
 #
 #   本地 checkout:
 #     sudo ./deploy/install.sh --role panel
@@ -32,7 +32,7 @@ set -o pipefail
 # --------------- 可配置项(命令行可覆盖)---------------#
 
 # 目标仓库(用来从 Release latest 拉二进制)
-repo="MagirecoCN-Revival-Project/magireco-cnv-server"
+repo="MagirecoCN-Revival-Project/magirecocn-api-server"
 release_base="https://github.com/${repo}/releases/latest/download"
 
 # 部署根路径,FHS 风格
@@ -590,7 +590,7 @@ cat <<'EOF'
 
 [Unit]
 Description=Magireco Revival Panel
-Documentation=https://github.com/MagirecoCN-Revival-Project/magireco-cnv-server
+Documentation=https://github.com/MagirecoCN-Revival-Project/magirecocn-api-server
 After=network-online.target
 Wants=network-online.target
 
@@ -639,7 +639,7 @@ cat <<'EOF'
 
 [Unit]
 Description=Magireco Revival Business Node
-Documentation=https://github.com/MagirecoCN-Revival-Project/magireco-cnv-server
+Documentation=https://github.com/MagirecoCN-Revival-Project/magirecocn-api-server
 After=network-online.target
 Wants=network-online.target
 
@@ -681,7 +681,7 @@ cat <<'EOF'
 
 [Unit]
 Description=Magireco Revival Edge Node
-Documentation=https://github.com/MagirecoCN-Revival-Project/magireco-cnv-server
+Documentation=https://github.com/MagirecoCN-Revival-Project/magirecocn-api-server
 After=network-online.target
 Wants=network-online.target
 

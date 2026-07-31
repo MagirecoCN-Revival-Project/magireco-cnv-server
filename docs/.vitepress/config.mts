@@ -29,7 +29,7 @@ export default withMermaid(
 
       editLink: {
         pattern:
-          'https://github.com/MagirecoCN-Revival-Project/magireco-cnv-server/edit/main/docs/:path',
+          'https://github.com/MagirecoCN-Revival-Project/magirecocn-api-server/edit/main/docs/:path',
         text: '在 GitHub 上编辑此页',
       },
 
@@ -134,7 +134,7 @@ export default withMermaid(
       socialLinks: [
         {
           icon: 'github',
-          link: 'https://github.com/magirecocn-revival-project/magireco-cnv-server',
+          link: 'https://github.com/magirecocn-revival-project/magirecocn-api-server',
         },
       ],
 

@@ -15,8 +15,8 @@
 ## 拉代码
 
 ```bash
-git clone https://github.com/magirecocn-revival-project/magireco-cnv-server.git
-cd magireco-cnv-server
+git clone https://github.com/magirecocn-revival-project/magirecocn-api-server.git
+cd magirecocn-api-server
 go mod download
 ```
 

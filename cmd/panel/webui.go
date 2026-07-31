@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"magirecocn-revival/cnv-server/internal/panelstore"
+	"magirecocn-revival/api-server/internal/panelstore"
 )
 
 // webUI 让面板托管游戏前端(登录/注册/找回/管理后台/用户中心)。

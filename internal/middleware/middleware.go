@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"magirecocn-revival/cnv-server/internal/api/respond"
-	"magirecocn-revival/cnv-server/internal/auth"
-	"magirecocn-revival/cnv-server/internal/store"
+	"magirecocn-revival/api-server/internal/api/respond"
+	"magirecocn-revival/api-server/internal/auth"
+	"magirecocn-revival/api-server/internal/store"
 )
 
 type ctxKey int

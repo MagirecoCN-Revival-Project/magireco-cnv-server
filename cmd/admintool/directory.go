@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"magirecocn-revival/cnv-server/internal/directory"
+	"magirecocn-revival/api-server/internal/directory"
 )
 
 // gen-directory-key 生成节点目录的 Ed25519 信任根密钥对。

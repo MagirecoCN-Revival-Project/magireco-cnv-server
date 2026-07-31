@@ -17,8 +17,8 @@ import (
 	"strconv"
 	"time"
 
-	"magirecocn-revival/cnv-server/internal/auth"
-	"magirecocn-revival/cnv-server/internal/store"
+	"magirecocn-revival/api-server/internal/auth"
+	"magirecocn-revival/api-server/internal/store"
 )
 
 // Config 验证码挑战参数。

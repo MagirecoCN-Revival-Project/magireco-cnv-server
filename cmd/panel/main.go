@@ -31,9 +31,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"magirecocn-revival/cnv-server/internal/config"
-	"magirecocn-revival/cnv-server/internal/middleware"
-	"magirecocn-revival/cnv-server/internal/panelstore"
+	"magirecocn-revival/api-server/internal/config"
+	"magirecocn-revival/api-server/internal/middleware"
+	"magirecocn-revival/api-server/internal/panelstore"
 )
 
 var version = "dev"

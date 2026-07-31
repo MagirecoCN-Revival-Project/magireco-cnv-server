@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"sync/atomic"
 
-	"magirecocn-revival/cnv-server/internal/api/respond"
-	"magirecocn-revival/cnv-server/internal/store"
+	"magirecocn-revival/api-server/internal/api/respond"
+	"magirecocn-revival/api-server/internal/store"
 )
 
 // Limits 持有运行时可调的大小上限(全局请求体 / 热更新包),用 atomic 存字节数:

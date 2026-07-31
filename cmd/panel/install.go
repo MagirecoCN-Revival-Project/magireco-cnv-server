@@ -14,9 +14,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"magirecocn-revival/cnv-server/internal/auth"
-	"magirecocn-revival/cnv-server/internal/panelstore"
-	"magirecocn-revival/cnv-server/internal/store"
+	"magirecocn-revival/api-server/internal/auth"
+	"magirecocn-revival/api-server/internal/panelstore"
+	"magirecocn-revival/api-server/internal/store"
 )
 
 // ─── 安装模块（WordPress 式安装向导）────────────────────────────────────────────

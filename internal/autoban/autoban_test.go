@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"magirecocn-revival/cnv-server/internal/store"
+	"magirecocn-revival/api-server/internal/store"
 )
 
 func newStore(t *testing.T) *store.Store {

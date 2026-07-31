@@ -9,21 +9,21 @@
 仿 MCSManager 风格的远程拉脚本 + `bash` 执行,**不需要 clone 仓库**:
 
 ```bash
-sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magireco-cnv-server/main/deploy/install.sh | bash"
+sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magirecocn-api-server/main/deploy/install.sh | bash"
 # 或用 curl
-sudo su -c "curl -fsSL https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magireco-cnv-server/main/deploy/install.sh | bash"
+sudo su -c "curl -fsSL https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magirecocn-api-server/main/deploy/install.sh | bash"
 ```
 
 弹出交互菜单,选 `1) panel` / `2) node-business` / `3) node-edge`(管道里的 `stdin` 被脚本读 `/dev/tty` 拿到)。
 也能跳过菜单直接指定角色:
 
 ```bash
-sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magireco-cnv-server/main/deploy/install.sh | bash -s -- panel"
-sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magireco-cnv-server/main/deploy/install.sh | bash -s -- node-business"
-sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magireco-cnv-server/main/deploy/install.sh | bash -s -- node-edge"
+sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magirecocn-api-server/main/deploy/install.sh | bash -s -- panel"
+sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magirecocn-api-server/main/deploy/install.sh | bash -s -- node-business"
+sudo su -c "wget -qO- https://raw.githubusercontent.com/MagirecoCN-Revival-Project/magirecocn-api-server/main/deploy/install.sh | bash -s -- node-edge"
 ```
 
-二进制脚本会从 [GitHub Release latest](https://github.com/MagirecoCN-Revival-Project/magireco-cnv-server/releases/latest) 按 `uname -m` 选 `amd64` / `arm64` 自动下载;systemd unit 与边缘 `.env` 模板**内嵌**在脚本里,
+二进制脚本会从 [GitHub Release latest](https://github.com/MagirecoCN-Revival-Project/magirecocn-api-server/releases/latest) 按 `uname -m` 选 `amd64` / `arm64` 自动下载;systemd unit 与边缘 `.env` 模板**内嵌**在脚本里,
 没有外部模板文件依赖。
 
 ### 从仓库 checkout(开发/离线包)

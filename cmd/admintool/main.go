@@ -24,9 +24,9 @@ import (
 
 	"golang.org/x/term"
 
-	"magirecocn-revival/cnv-server/internal/auth"
-	"magirecocn-revival/cnv-server/internal/panelstore"
-	"magirecocn-revival/cnv-server/internal/store"
+	"magirecocn-revival/api-server/internal/auth"
+	"magirecocn-revival/api-server/internal/panelstore"
+	"magirecocn-revival/api-server/internal/store"
 )
 
 func main() {

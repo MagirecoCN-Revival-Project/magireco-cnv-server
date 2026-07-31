@@ -11,8 +11,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"magirecocn-revival/cnv-server/internal/panelstore"
-	"magirecocn-revival/cnv-server/internal/store"
+	"magirecocn-revival/api-server/internal/panelstore"
+	"magirecocn-revival/api-server/internal/store"
 )
 
 // 用与 main.go 相同的 chi 接线搭一个最小面板路由：/install 挂安装模块、

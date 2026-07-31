@@ -15,8 +15,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"magirecocn-revival/cnv-server/internal/auth"
-	"magirecocn-revival/cnv-server/internal/panelstore"
+	"magirecocn-revival/api-server/internal/auth"
+	"magirecocn-revival/api-server/internal/panelstore"
 )
 
 // Handler 挂载面板管理 API。

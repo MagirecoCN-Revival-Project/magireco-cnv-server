@@ -12,7 +12,7 @@
 
 [Unit]
 Description=Magireco Revival Business Node
-Documentation=https://github.com/MagirecoCN-Revival-Project/magireco-cnv-server
+Documentation=https://github.com/MagirecoCN-Revival-Project/magirecocn-api-server
 After=network-online.target
 Wants=network-online.target
 

@@ -24,7 +24,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"magirecocn-revival/cnv-server/internal/store"
+	"magirecocn-revival/api-server/internal/store"
 )
 
 // newTestHandler 启一份 SQLite 内存库,跑迁移,构造 Handler。
