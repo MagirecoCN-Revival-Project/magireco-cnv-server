@@ -39,10 +39,12 @@ import (
 	"magirecocn-revival/cnv-server/internal/capworker"
 	"magirecocn-revival/cnv-server/internal/config"
 	"magirecocn-revival/cnv-server/internal/control"
+	"magirecocn-revival/cnv-server/internal/directory"
 	"magirecocn-revival/cnv-server/internal/email"
 	"magirecocn-revival/cnv-server/internal/middleware"
 	"magirecocn-revival/cnv-server/internal/scheduler"
 	"magirecocn-revival/cnv-server/internal/store"
+	"magirecocn-revival/cnv-server/internal/totentanz"
 )
 
 // version is set at build time via -ldflags "-X main.version=vX.Y.Z"
@@ -98,8 +100,41 @@ func main() {
 			log.Error("读取节点目录文件失败", "file", cfg.DirectoryFile, "err", readErr)
 			os.Exit(2)
 		}
+		// 启动自检:节点只是原样转发离线签好的字节,手里没有根公钥(公钥钉在客户端
+		// APK 里)所以**验不了签**;但至少要把 payload 解出来看一眼结构。
+		//
+		// 不检查的话,写错路径、文件被截断、或旧版 admintool(没有 Validate)签出的
+		// 违规目录都会被照单下发。客户端那边只会静默丢弃并回退 API_HOST——服务
+		// 一切正常、日志一片安静,而按 caps 的能力隔离已经失效了。
+		var sd directory.SignedDirectory
+		if err := json.Unmarshal(data, &sd); err != nil {
+			log.Error("节点目录文件不是合法的 {payload,sig} JSON,拒绝下发",
+				"file", cfg.DirectoryFile, "err", err)
+			os.Exit(2)
+		}
+		dir, err := directory.DecodeUnverified(sd)
+		if err != nil {
+			log.Error("节点目录 payload 解析失败,拒绝下发",
+				"file", cfg.DirectoryFile, "err", err)
+			os.Exit(2)
+		}
+		// 能力分配违规(如边缘节点持有 save)必须拦住:一旦下发,客户端只认签名,
+		// 会老老实实把凭证发到那台边缘机上。
+		if err := dir.Validate(); err != nil {
+			log.Error("节点目录未通过校验,拒绝下发(请用新版 admintool 重新签发)",
+				"file", cfg.DirectoryFile, "err", err)
+			os.Exit(2)
+		}
+		// 过期只告警不拦:目录过期时客户端会自行忽略并回退,服务本身仍可用,
+		// 但运维需要知道该续签了,否则多节点路由就这么悄悄退化了。
+		if now := time.Now().Unix(); dir.ExpiresAt <= now {
+			log.Warn("节点目录已过期,客户端会忽略它并回退到 API_HOST,请尽快重新签发",
+				"file", cfg.DirectoryFile, "expires_at", dir.ExpiresAt, "now", now)
+		}
 		directoryJSON = data
-		log.Info("已加载签名节点目录", "file", cfg.DirectoryFile)
+		log.Info("已加载签名节点目录",
+			"file", cfg.DirectoryFile, "seq", dir.Seq,
+			"nodes", len(dir.Nodes), "expires_at", dir.ExpiresAt)
 	}
 
 	// 运行指标采集:管控通道周期推送与只读状态页共用同一份快照逻辑。
@@ -274,7 +309,19 @@ func runBusiness(ctx context.Context, cfg *config.Config, dirJSON json.RawMessag
 	capLimiter := middleware.NewLimiter("captcha", 60, time.Minute, "验证码请求过于频繁", middleware.IPKey)
 	saveLimiter := middleware.NewLimiter("save-put", 2, time.Minute, "云存档上传过于频繁,请稍后再试", nil)
 
+	// 上游 Totentanz 端点发现:后台周期拉取,结果经 services 下发给客户端。
+	// 刻意放在后台而非请求路径上——上游不受我们控制,它慢/挂都不该连累握手。
+	disc := totentanz.New(cfg.TotentanzDiscoveryURL, cfg.TotentanzClientVersion, log)
+	if disc.Enabled() {
+		go disc.Run(ctx, time.Duration(cfg.TotentanzRefreshSec)*time.Second)
+		log.Info("已启用 Totentanz 端点发现",
+			"url", cfg.TotentanzDiscoveryURL,
+			"version", cfg.TotentanzClientVersion,
+			"refresh_sec", cfg.TotentanzRefreshSec)
+	}
+
 	clientH := &client.Handler{
+		Discovery:           disc,
 		St:                  st,
 		ResourceTokenSecret: signKey,
 		SignatureAllowed:    cfg.SignatureAllowed,

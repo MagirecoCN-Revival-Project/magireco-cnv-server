@@ -41,12 +41,16 @@ import (
 	"magirecocn-revival/cnv-server/internal/autoban"
 	"magirecocn-revival/cnv-server/internal/middleware"
 	"magirecocn-revival/cnv-server/internal/store"
+	"magirecocn-revival/cnv-server/internal/totentanz"
 )
 
 // Handler 把 store 与配置注入到 HTTP handler。
 type Handler struct {
 	St                  *store.Store
 	ResourceTokenSecret []byte // resource_token 的 HMAC 签名根密钥
+	// Discovery 上游 Totentanz 端点发现的后台客户端；nil 或未启用时
+	// services 里不会出现 resource_base / game_max_threads。
+	Discovery *totentanz.Client
 	// SignatureAllowed:APK 签名证书 SHA-256 白名单(64 字符小写 hex)。
 	// 必须是从 keystore 用 keytool -exportcert | sha256 得到的 DER 摘要,
 	// 与客户端 IntegrityGuard.EXPECTED_SIGNATURE_SHA256 / CI 注入的值一致。
@@ -246,7 +250,7 @@ func (h *Handler) init(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// services 对象:全部三个字段都未配置时直接省略整个 services 键。
-	if svc := getServicesConfig(ctx, h.St).toResponseMap(); svc != nil {
+	if svc := getServicesConfig(ctx, h.St, h.Discovery).toResponseMap(); svc != nil {
 		body["services"] = svc
 	}
 	// directory:已签名的节点目录,客户端用钉扎的 Ed25519 根公钥验签后更新本地缓存。

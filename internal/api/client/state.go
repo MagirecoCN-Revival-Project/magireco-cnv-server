@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"magirecocn-revival/cnv-server/internal/store"
+	"magirecocn-revival/cnv-server/internal/totentanz"
 )
 
 // ── config 包装(读 KV 表)────────────────────────────────────────────────
@@ -72,9 +73,19 @@ type servicesCfg struct {
 	CapWorkerURL   string   `json:"cap_worker_url,omitempty"`
 	ProxyBackends  []string `json:"proxy_backends,omitempty"`
 	GameServerHost string   `json:"game_server_host,omitempty"`
+
+	// GameMaxThreads 透传发现响应里的 max_threads(上游建议的 HTTP/2 并发数,
+	// 实测该值会动态变化)。0 = 不下发,客户端沿用自身默认。
+	GameMaxThreads int `json:"game_max_threads,omitempty"`
+
+	// ResourceBase 是上游 Totentanz 的**资源**基址(完整 URL,含路径),来自端点发现。
+	//
+	// 与 GameServerBase 严格区分:那个是游戏 **API** 服务器,这个是**资源 CDN**。
+	// 二者语义不同、来源不同,混用会让代理耗尽时的 API 回退打到静态资源机上。
+	ResourceBase string `json:"resource_base,omitempty"`
 }
 
-func getServicesConfig(ctx context.Context, st *store.Store) servicesCfg {
+func getServicesConfig(ctx context.Context, st *store.Store, disc *totentanz.Client) servicesCfg {
 	var c servicesCfg
 	_, _ = st.ConfigGet(ctx, "services", &c)
 	// 过滤掉空字符串和明显非法的代理 URL
@@ -90,6 +101,12 @@ func getServicesConfig(ctx context.Context, st *store.Store) servicesCfg {
 	// 老配置可能写成 https://host/,这里向后兼容地剥离 scheme + 路径,
 	// 让旧库不需要手工迁移就能继续给客户端正确的值。
 	c.GameServerHost = normalizeGameServerHost(c.GameServerHost)
+	if ep := disc.Get(); ep != nil {
+		c.ResourceBase = ep.Base
+		if ep.MaxThreads > 0 {
+			c.GameMaxThreads = ep.MaxThreads
+		}
+	}
 	return c
 }
 
@@ -124,6 +141,16 @@ func (c servicesCfg) toResponseMap() map[string]any {
 	if c.GameServerHost != "" {
 		out["game_server_host"] = c.GameServerHost
 	}
+	if c.GameMaxThreads > 0 {
+		out["game_max_threads"] = c.GameMaxThreads
+	}
+	if c.ResourceBase != "" {
+		out["resource_base"] = c.ResourceBase
+	}
+	// 空判必须放在**所有**字段都填完之后。
+	// 曾经它卡在 game_server_host 之后：只配了端点发现（resource_base /
+	// game_max_threads）而没配那三个旧字段时，整个 services 会被判空吞掉，
+	// 发现结果永远到不了客户端——而且没有任何报错。
 	if len(out) == 0 {
 		return nil
 	}

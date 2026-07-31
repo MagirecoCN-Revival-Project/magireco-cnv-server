@@ -54,6 +54,16 @@ type Config struct {
 
 	// 业务节点专用
 	DBURL               string        // postgres://...
+	// TotentanzDiscoveryURL 上游 Totentanz 的端点发现接口完整 URL
+	// (CNV_TOTENTANZ_DISCOVERY_URL)。空 = 不启用,services 完全沿用 KV 配置。
+	TotentanzDiscoveryURL string
+	// TotentanzClientVersion 向发现接口上报的版本号(CNV_TOTENTANZ_CLIENT_VERSION),
+	// 对应底包的 rNNN。缺省 0 交由上游按默认处理。
+	TotentanzClientVersion int
+	// TotentanzRefreshSec 发现结果的后台刷新间隔秒数
+	// (CNV_TOTENTANZ_REFRESH_SEC),缺省 300。
+	TotentanzRefreshSec int
+
 	ResourceTokenSecret []byte        // CNV_RESOURCE_TOKEN_SECRET, resource_token 的 HMAC 签名根密钥;不设则首次启动自动生成并持久化
 	AdminJWTSecret      []byte        // 管理后台 JWT / cookie 签名(cookie 完整性校验)
 	CapWorkerURL        string        // cap-worker 部署 URL(可空,内置自实现)
@@ -103,6 +113,9 @@ func LoadFromEnv() (*Config, error) {
 		BodyLimitMaxBytes:   int64(intOr("CNV_BODY_LIMIT_MB", 8)) << 20,
 		PrimaryResPath:      envOr("CNV_PRIMARY_RES_PATH", "/res"),
 		TrustProxy:          os.Getenv("CNV_TRUST_PROXY"),
+		TotentanzDiscoveryURL:  strings.TrimSpace(os.Getenv("CNV_TOTENTANZ_DISCOVERY_URL")),
+		TotentanzClientVersion: atoiOr(os.Getenv("CNV_TOTENTANZ_CLIENT_VERSION"), 0),
+		TotentanzRefreshSec:    atoiOr(os.Getenv("CNV_TOTENTANZ_REFRESH_SEC"), 300),
 		TLSCert:             os.Getenv("CNV_TLS_CERT"),
 		TLSKey:              os.Getenv("CNV_TLS_KEY"),
 		SignatureAllowed:    splitCSV(os.Getenv("CNV_SIGNATURE_WHITELIST")),
@@ -229,4 +242,13 @@ func hostname() string {
 		return h
 	}
 	return "unknown"
+}
+
+// atoiOr 解析十进制整数，失败时返回 def。
+// 用于可选的数值型环境变量：留空或写错都退回默认值，而不是让节点起不来。
+func atoiOr(s string, def int) int {
+	if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+		return n
+	}
+	return def
 }

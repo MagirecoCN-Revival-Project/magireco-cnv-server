@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -69,9 +70,87 @@ type SignedDirectory struct {
 	Sig     string `json:"sig"`     // standard base64(Ed25519 签名)
 }
 
+// 节点角色。
+const (
+	RoleBusiness = "business"
+	RoleEdge     = "edge"
+)
+
+// isCredentialCap 判断该能力是否会让客户端把**凭证**发到这个节点。
+func isCredentialCap(c string) bool {
+	return c == CapLogin || c == CapAccount || c == CapSave
+}
+
+func isKnownCap(c string) bool {
+	switch c {
+	case CapInit, CapLogin, CapAccount, CapSave, CapResource:
+		return true
+	}
+	return false
+}
+
+// Validate 校验目录是否满足纪律文件 §2 的能力分配约定。
+//
+// 为什么必须在**服务端签发时**卡住:客户端拿到目录后只验签名,不会、也无法
+// 质疑能力分配是否合理——一份把 save 能力发给边缘节点的目录,只要签名有效,
+// 客户端就会老老实实把云存档凭证发到那台边缘机上。也就是说,这条不变量
+// 客户端侧根本兜不住,只能在签发这一侧强制。
+//
+// 后台误勾一个复选框就足以造成这种情况,而事故现象(凭证泄漏到边缘节点)
+// 既不报错也不易察觉,所以宁可让签发当场失败。
+func (d *Directory) Validate() error {
+	if d == nil {
+		return errors.New("目录为空")
+	}
+	if len(d.Nodes) == 0 {
+		return errors.New("目录不含任何节点")
+	}
+	if d.ExpiresAt <= 0 {
+		return errors.New("expires_at 必须为正的 unix 秒(为 0 会被客户端立即判为过期)")
+	}
+	seen := make(map[string]bool, len(d.Nodes))
+	for i, n := range d.Nodes {
+		if strings.TrimSpace(n.ID) == "" {
+			return fmt.Errorf("节点 #%d 缺少 id", i)
+		}
+		if seen[n.ID] {
+			return fmt.Errorf("节点 id 重复: %s", n.ID)
+		}
+		seen[n.ID] = true
+		if strings.TrimSpace(n.API) == "" {
+			return fmt.Errorf("节点 %s 缺少 api", n.ID)
+		}
+		if len(n.Caps) == 0 {
+			return fmt.Errorf("节点 %s 未声明任何 caps(客户端永远不会路由到它)", n.ID)
+		}
+		for _, c := range n.Caps {
+			if !isKnownCap(c) {
+				return fmt.Errorf("节点 %s 声明了未知能力 %q", n.ID, c)
+			}
+		}
+		// §2 能力隔离:边缘节点只能有 resource,绝不能碰凭证类。
+		if n.Role == RoleEdge {
+			for _, c := range n.Caps {
+				if isCredentialCap(c) {
+					return fmt.Errorf(
+						"边缘节点 %s 不得持有凭证类能力 %q(§2 能力隔离:"+
+							"凭证类请求绝不能指向仅做资源分发的节点)", n.ID, c)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // Sign 将 d 序列化为紧凑 JSON，base64url 编码（无填充），
 // 再对该编码字符串的 UTF-8 字节用 priv 签名，返回线上格式 SignedDirectory。
+//
+// 签发前先跑 Validate:签名一旦签出就是客户端眼中的"真理",非法的能力分配
+// 必须在这里挡住,而不是等它生效。
 func Sign(d *Directory, priv ed25519.PrivateKey) (SignedDirectory, error) {
+	if err := d.Validate(); err != nil {
+		return SignedDirectory{}, fmt.Errorf("拒绝签发非法目录: %w", err)
+	}
 	inner, err := json.Marshal(d)
 	if err != nil {
 		return SignedDirectory{}, err
@@ -104,6 +183,31 @@ func Verify(sd SignedDirectory, pub ed25519.PublicKey) (*Directory, error) {
 	var d Directory
 	if err := json.Unmarshal(inner, &d); err != nil {
 		return nil, err
+	}
+	return &d, nil
+}
+
+// DecodeUnverified 只做「解析」不做「验签」:把线上格式的 payload base64url 解码并
+// 反序列化为 Directory。
+//
+// ⚠️ 名字里的 Unverified 是认真的——它**不校验签名**,返回的内容不可信,
+// 绝不能拿它替代 Verify 去做任何信任决策。
+//
+// 唯一用途:业务节点自检。节点只分发离线签好的字节、手里没有根公钥(公钥钉在
+// 客户端 APK 里),因此没法验签;但它仍然可以把 payload 解出来看一眼结构是否
+// 合理——比如能力分配有没有违反 §2、是不是早就过期了。这类问题若不在启动时
+// 喊出来,客户端只会静默丢弃目录并回退 API_HOST,运维完全无感。
+func DecodeUnverified(sd SignedDirectory) (*Directory, error) {
+	if sd.Payload == "" || sd.Sig == "" {
+		return nil, errors.New("目录缺少 payload 或 sig")
+	}
+	inner, err := base64.RawURLEncoding.DecodeString(sd.Payload)
+	if err != nil {
+		return nil, errors.New("payload 不是合法 base64url")
+	}
+	var d Directory
+	if err := json.Unmarshal(inner, &d); err != nil {
+		return nil, fmt.Errorf("payload 不是合法目录 JSON: %w", err)
 	}
 	return &d, nil
 }
