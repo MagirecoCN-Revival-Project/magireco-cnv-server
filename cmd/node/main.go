@@ -47,6 +47,7 @@ import (
 	"magirecocn-revival/api-server/internal/email"
 	"magirecocn-revival/api-server/internal/middleware"
 	"magirecocn-revival/api-server/internal/pki"
+	"magirecocn-revival/api-server/internal/scenemanifest"
 	"magirecocn-revival/api-server/internal/scheduler"
 	"magirecocn-revival/api-server/internal/store"
 	"magirecocn-revival/api-server/internal/totentanz"
@@ -308,6 +309,23 @@ func runBusiness(ctx context.Context, cfg *config.Config, dirJSON json.RawMessag
 		os.Exit(2)
 	}
 
+	// 场景资产清单(契约登记表 R5a)。清单是构建管线的产物,随部署挂载,不入版本库。
+	//
+	// 加载失败**拒绝启动**而不是降级成"该功能不可用":配了路径说明运维打算启用它,
+	// 这时候静默跳过会让服务看起来正常、而所有场景加载都 503——那种故障要等玩家
+	// 报上来才发现。清单的全量校验也在加载时一次做完(见 LoadFile)。
+	var sceneAssets func(context.Context, string) ([]scenemanifest.Asset, error)
+	if cfg.SceneManifestFile != "" {
+		mf, mfErr := scenemanifest.LoadFile(cfg.SceneManifestFile)
+		if mfErr != nil {
+			log.Error("加载场景资产清单失败", "file", cfg.SceneManifestFile, "err", mfErr)
+			os.Exit(2)
+		}
+		sceneAssets = mf.Lookup
+		log.Info("场景资产清单已加载",
+			"file", cfg.SceneManifestFile, "version", mf.Version(), "scenes", mf.Len())
+	}
+
 	clientH := &client.Handler{
 		Discovery:           disc,
 		TokenIssuer:         tokenIssuer,
@@ -323,13 +341,11 @@ func runBusiness(ctx context.Context, cfg *config.Config, dirJSON json.RawMessag
 		AutoBan:             autoBan,
 		DirectoryJSON:       dirJSON,
 		DevMode:             cfg.DevMode,
-		// SceneAssets 尚未接入构建管线。形状已随 R2 定稿(path + sha256 + size),
-		// 但"清单从哪来"仍压在 R5(master data 来源与版本化)后面。
-		//
-		// nil = 该功能未启用，/client/scene-manifest 明确返回 503 而非空清单——
-		// 空清单会被客户端理解为"该场景无需任何资产",从而静默进入残缺场景,
-		// 把错误推迟到最难排查的地方才暴露。
-		SceneAssets:         nil,
+		// SceneAssets 由 CNV_SCENE_MANIFEST_FILE 决定;未配置时为 nil,
+		// /client/scene-manifest 明确返回 503 而非空清单——空清单会被客户端
+		// 理解为"该场景无需任何资产",从而静默进入残缺场景,把错误推迟到最难
+		// 排查的地方才暴露。
+		SceneAssets:         sceneAssets,
 		BootstrapEndpoint:   cfg.BootstrapEndpoint,
 		BootstrapMaxThreads: cfg.BootstrapMaxThreads,
 		BootstrapVersion:    cfg.BootstrapVersion,

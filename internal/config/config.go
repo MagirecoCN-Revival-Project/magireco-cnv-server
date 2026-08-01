@@ -44,6 +44,13 @@ type Config struct {
 	// 泄进生产(不显眼)。
 	DevMode bool
 
+	// SceneManifestFile 场景资产清单文件路径(CNV_SCENE_MANIFEST_FILE)。
+	// 空 = 场景清单功能未启用,/client/scene-manifest 明确返回 503。
+	//
+	// 清单是**构建管线的产物**,随部署挂载或同步,不入版本库(铁律三)。
+	// 内容格式见 internal/scenemanifest.File。
+	SceneManifestFile string
+
 	// BootstrapEndpoint 下发给 Android 底包的业务服务器地址
 	// (CNV_BOOTSTRAP_ENDPOINT)。空 = 本节点不接管 Android 底包,
 	// /magica/api/snaa 返回 503。源码不得硬编码(铁律二)。
@@ -164,6 +171,7 @@ func LoadFromEnv() (*Config, error) {
 		ChannelAllowed:         splitCSV(os.Getenv("CNV_CHANNEL_WHITELIST")),
 		RequireSignature:       boolOr("CNV_REQUIRE_SIGNATURE", false),
 		DevMode:                boolOr("CNV_DEV_MODE", false),
+		SceneManifestFile:      strings.TrimSpace(os.Getenv("CNV_SCENE_MANIFEST_FILE")),
 		BootstrapEndpoint:      strings.TrimSpace(os.Getenv("CNV_BOOTSTRAP_ENDPOINT")),
 		BootstrapMaxThreads:    intOr("CNV_BOOTSTRAP_MAX_THREADS", 4),
 		BootstrapVersion:       intOr("CNV_BOOTSTRAP_VERSION", 0),
