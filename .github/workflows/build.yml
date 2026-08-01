@@ -6,11 +6,14 @@ name: 🛠️ 构建并发布服务端
 # ║                                                                    ║
 # ║ 版本规则                                                            ║
 # ║ ───────                                                            ║
-# ║   ▸ 每次 push 自动触发:修订号(patch)+1,VersionCode +1            ║
-# ║   ▸ 手动触发(workflow_dispatch,不勾选特殊选项):                   ║
-# ║       次版本号(minor)+1,修订号归零,VersionCode +1                ║
-# ║   ▸ 手动触发(勾选 bump_major):                                     ║
-# ║       主版本号(major)+1,次版本号与修订号归零,VersionCode +1       ║
+# ║   ▸ 版本号 = <VERSION 文件里的 主.次>.<github.run_number>          ║
+# ║   ▸ VersionCode = github.run_number                                ║
+# ║   ▸ 升主/次版本:改仓库根的 VERSION 文件并提交                       ║
+# ║                                                                    ║
+# ║   不需要把版本号写回任何地方——run_number 由 GitHub 维护、单调递增, ║
+# ║   VERSION 文件的变更留在 git 历史里。原先"存进 Variables 再写回"    ║
+# ║   的方案需要 variables:write 权限,而内置 GITHUB_TOKEN 没有它,      ║
+# ║   缺 PAT 时整条 CI 必红且产物会静默覆盖同一个 tag。                 ║
 # ║                                                                    ║
 # ║ 构建流程                                                            ║
 # ║ ───────                                                            ║
@@ -25,14 +28,14 @@ name: 🛠️ 构建并发布服务端
 # ║                                                                    ║
 # ║ 所需 Secrets                                                        ║
 # ║ ──────────                                                         ║
-# ║   GH_TOKEN          — 有 contents:write + variables:write 权限的   ║
+# ║   GH_TOKEN          — 可选。缺失时回落内置 GITHUB_TOKEN,           ║
+# ║                        发布 Release 只需 contents:write,它有。     ║
 # ║                        Personal Access Token(可选,缺失时回落到     ║
 # ║                        内置 GITHUB_TOKEN,但 Variables 写入可能     ║
 # ║                        被组织策略拒绝)                              ║
 # ║                                                                    ║
-# ║ 所需 Variables(首次运行会自动从 1.0.0 / VersionCode=1 开始)        ║
-# ║   SERVER_VERSION       — 当前版本号,如 "1.0.0"                     ║
-# ║   SERVER_VERSION_CODE  — 当前 VersionCode 整数                     ║
+# ║ 所需 Variables                                                     ║
+# ║   (已不再使用 GitHub Variables——版本来源见上)                      ║
 # ║                                                                    ║
 # ╚════════════════════════════════════════════════════════════════════╝
 
@@ -48,13 +51,10 @@ on:
       - '.claude/**'
       - 'LICENSE'
       - '.gitignore'
+  # 手动触发与 push 触发产出完全一样的版本号(补丁号 = run_number)。
+  # 原先的 bump_major 开关已移除:升主/次版本改仓库根的 VERSION 文件即可,
+  # 那样版本变更留在 git 历史里,可 review、可回溯,也不依赖任何令牌权限。
   workflow_dispatch:
-    inputs:
-      bump_major:
-        description: '大版本升级(主版本号+1,次版本号与修订号归零)'
-        required: false
-        default: 'false'
-        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -163,106 +163,59 @@ jobs:
           token: ${{ secrets.GH_TOKEN || github.token }}
           fetch-depth: 0   # 让 git describe / compare 可用
 
-      - name: 🔢 计算新版本号
+      - name: 🔢 计算版本号
         id: version
         run: |
           python3 <<'SCRIPT_END'
-          import os, sys
-
+          import os, sys, re
           sys.stdout.reconfigure(line_buffering=True)
 
-          class C:
-              RESET         = "\033[0m"
-              BOLD          = "\033[1m"
-              DIM           = "\033[2m"
-              RED           = "\033[31m"
-              BRIGHT_GREEN  = "\033[92m"
-              BRIGHT_YELLOW = "\033[93m"
-              BRIGHT_BLUE   = "\033[94m"
-              BRIGHT_CYAN   = "\033[96m"
-              BRIGHT_WHITE  = "\033[97m"
-              CYAN          = "\033[36m"
-
-          def c(color, text): return f"{color}{text}{C.RESET}"
-          def header(text):
-              bar = "═" * 60
-              print(f"\n{c(C.BOLD + C.BRIGHT_BLUE, bar)}")
-              print(c(C.BOLD + C.BRIGHT_WHITE, f"  {text}"))
-              print(f"{c(C.BOLD + C.BRIGHT_BLUE, bar)}\n", flush=True)
-          def section(text): print(f"\n{c(C.BOLD + C.CYAN, '┌─ ' + text)}", flush=True)
-          def info(t):  print(f"  {c(C.BRIGHT_BLUE,   'ℹ')} {t}", flush=True)
-          def ok(t):    print(f"  {c(C.BRIGHT_GREEN,  '✔')} {t}", flush=True)
-          def warn(t):  print(f"  {c(C.BRIGHT_YELLOW, '⚠')} {t}", flush=True)
-
-          def set_output(key, value):
-              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-                  f.write(f"{key}={value}\n")
-
-          def get_variable(repo, name, token, default=""):
-              """直接调用 GitHub REST API 读取仓库变量,不依赖 gh CLI 的权限配置。"""
-              import json, urllib.request, urllib.error
-              headers = {
-                  "Authorization": f"Bearer {token}",
-                  "Accept": "application/vnd.github+json",
-                  "X-GitHub-Api-Version": "2022-11-28",
-              }
-              url = f"https://api.github.com/repos/{repo}/actions/variables/{name}"
+          # ── 版本号从哪来 ──
+          #
+          # 主.次版本存在仓库根的 VERSION 文件里,补丁号直接取 github.run_number。
+          #
+          # 之前的做法是把完整版本号存进 GitHub Variables,每次构建 +1 再写回。
+          # 那需要一把有 variables:write 权限的 PAT——而内置 GITHUB_TOKEN **没有**
+          # 这个权限(Variables 不在它的权限集里,加 permissions: 也补不出来)。
+          # api-server 缺这把 PAT,于是 16 次构建全红;更糟的是版本号永远停在 1.0.1,
+          # 每次都往同一个 tag 上 --clobber 覆盖产物——tag 指向的 commit 与里面的
+          # 二进制对不上,而 CI 一直红着,这个静默损坏没人看得见。
+          #
+          # 现在这套不需要任何写回:
+          #   · run_number 由 GitHub 维护,单调递增,不可能两次构建撞号;
+          #   · 主/次版本改动 = 改 VERSION 文件 = 一次提交,可审计、可 review、零权限。
+          def read_series():
               try:
-                  with urllib.request.urlopen(
-                      urllib.request.Request(url, headers=headers)
-                  ) as resp:
-                      return json.loads(resp.read()).get("value", default)
-              except Exception:
-                  return default
+                  with open("VERSION", encoding="utf-8") as f:
+                      v = f.read().strip()
+              except FileNotFoundError:
+                  return 1, 0, "VERSION 文件不存在,取默认 1.0"
+              m = re.fullmatch(r"(\d+)\.(\d+)", v)
+              if not m:
+                  return 1, 0, f"VERSION 内容 {v!r} 不是 主.次 形式,取默认 1.0"
+              return int(m.group(1)), int(m.group(2)), ""
 
-          header("计算新版本号")
+          major, minor, note = read_series()
+          run_number = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
 
-          event_name = os.environ.get("GITHUB_EVENT_NAME", "push")
-          bump_major = os.environ.get("INPUT_BUMP_MAJOR", "false").lower() == "true"
-          repo       = os.environ["REPO"]
-          token      = os.environ.get("GH_TOKEN", "")
-
-          section("读取当前版本(GitHub Variables REST API)")
-          cur_version = get_variable(repo, "SERVER_VERSION",      token, "1.0.0")
-          cur_code    = int(get_variable(repo, "SERVER_VERSION_CODE", token, "1") or "1")
-          info(f"当前版本:  {c(C.BRIGHT_CYAN, cur_version)}")
-          info(f"当前 VersionCode: {c(C.BRIGHT_CYAN, str(cur_code))}")
-
-          parts = cur_version.split(".")
-          if len(parts) != 3 or not all(p.isdigit() for p in parts):
-              warn(f"版本格式异常 '{cur_version}',重置为 1.0.0")
-              parts = ["1", "0", "0"]
-          major, minor, patch = int(parts[0]), int(parts[1]), int(parts[2])
-
-          section("计算版本增量")
-          if event_name == "push":
-              patch += 1
-              mode = "patch +1(自动构建·push 触发)"
-          elif bump_major:
-              major += 1
-              minor  = 0
-              patch  = 0
-              mode   = "major +1(手动大版本升级)"
-          else:
-              minor += 1
-              patch  = 0
-              mode   = "minor +1(手动构建)"
-
-          new_code    = cur_code + 1
-          new_version = f"{major}.{minor}.{patch}"
+          new_version = f"{major}.{minor}.{run_number}"
           tag_name    = f"v{new_version}"
 
-          ok(f"升级模式:   {mode}")
-          ok(f"新版本号:   {c(C.BRIGHT_GREEN, new_version)}")
-          ok(f"新 VersionCode: {c(C.BRIGHT_GREEN, str(new_code))}")
-          ok(f"Release 标签:   {c(C.BRIGHT_GREEN, tag_name)}")
+          print(f"  版本系列(VERSION 文件): {major}.{minor}")
+          if note:
+              print(f"  ⚠ {note}")
+          print(f"  补丁号(run_number):     {run_number}")
+          print(f"  完整版本:               {new_version}")
+          print(f"  Release 标签:           {tag_name}")
+          print("")
+          print("  要升主/次版本:改仓库根的 VERSION 文件并提交即可,不需要任何令牌权限。")
 
-          set_output("new_version", new_version)
-          set_output("new_code",    str(new_code))
-          set_output("tag_name",    tag_name)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"new_version={new_version}\n")
+              f.write(f"new_code={run_number}\n")
+              f.write(f"tag_name={tag_name}\n")
           SCRIPT_END
-        env:
-          INPUT_BUMP_MAJOR: ${{ inputs.bump_major }}
+
 
       - name: 🐹 设置 Go 1.25
         uses: actions/setup-go@v5
@@ -467,16 +420,10 @@ jobs:
           repo            = os.environ["REPO"]
           token           = os.environ.get("GH_TOKEN", "")
           event_name      = os.environ.get("GITHUB_EVENT_NAME", "push")
-          bump_major      = os.environ.get("INPUT_BUMP_MAJOR", "false").lower() == "true"
           commit_sha_full = os.environ.get("GITHUB_SHA", "unknown")
           commit_sha      = commit_sha_full[:7]
 
-          if event_name == "push":
-              trigger_note = "自动构建(push 触发)"
-          elif bump_major:
-              trigger_note = "手动大版本升级"
-          else:
-              trigger_note = "手动构建"
+          trigger_note = "自动构建(push 触发)" if event_name == "push" else "手动构建"
 
           # ── 查询上次同类型 Release 标签(push→Pre-release,手动→Release)──
           is_prerelease = (event_name == "push")
@@ -610,101 +557,6 @@ jobs:
           TAG_NAME:         ${{ steps.version.outputs.tag_name }}
           NEW_VERSION:      ${{ steps.version.outputs.new_version }}
           NEW_CODE:         ${{ steps.version.outputs.new_code }}
-          INPUT_BUMP_MAJOR: ${{ inputs.bump_major }}
-
-      - name: 💾 保存新版本号到 GitHub Variables
-        run: |
-          python3 <<'SCRIPT_END'
-          import json, urllib.request, urllib.error, os, sys
-
-          sys.stdout.reconfigure(line_buffering=True)
-
-          class C:
-              RESET         = "\033[0m"
-              BOLD          = "\033[1m"
-              RED           = "\033[31m"
-              BRIGHT_GREEN  = "\033[92m"
-              BRIGHT_YELLOW = "\033[93m"
-              BRIGHT_BLUE   = "\033[94m"
-              BRIGHT_WHITE  = "\033[97m"
-              CYAN          = "\033[36m"
-
-          def c(color, text): return f"{color}{text}{C.RESET}"
-          def header(text):
-              bar = "═" * 60
-              print(f"\n{c(C.BOLD + C.BRIGHT_BLUE, bar)}")
-              print(c(C.BOLD + C.BRIGHT_WHITE, f"  {text}"))
-              print(f"{c(C.BOLD + C.BRIGHT_BLUE, bar)}\n", flush=True)
-          def ok(t):   print(f"  {c(C.BRIGHT_GREEN,  '✔')} {t}", flush=True)
-          def warn(t): print(f"  {c(C.BRIGHT_YELLOW, '⚠')} {t}", flush=True)
-          def err(t):  print(f"  {c(C.RED,           '✘')} {t}", flush=True)
-
-          def set_variable(repo, name, value, token):
-              """PATCH(更新)失败时自动 POST(创建),直接调用 REST API。"""
-              headers = {
-                  "Authorization": f"Bearer {token}",
-                  "Accept": "application/vnd.github+json",
-                  "X-GitHub-Api-Version": "2022-11-28",
-                  "Content-Type": "application/json",
-              }
-              body = json.dumps({"name": name, "value": value}).encode()
-
-              # 优先尝试更新
-              url_var = f"https://api.github.com/repos/{repo}/actions/variables/{name}"
-              req = urllib.request.Request(url_var, data=body, headers=headers, method="PATCH")
-              try:
-                  urllib.request.urlopen(req)
-                  return "updated"
-              except urllib.error.HTTPError as e:
-                  if e.code != 404:
-                      raise RuntimeError(f"PATCH {name} 失败 HTTP {e.code}: {e.read().decode()}")
-
-              # 变量不存在,改为创建
-              url_all = f"https://api.github.com/repos/{repo}/actions/variables"
-              req = urllib.request.Request(url_all, data=body, headers=headers, method="POST")
-              try:
-                  urllib.request.urlopen(req)
-                  return "created"
-              except urllib.error.HTTPError as e:
-                  raise RuntimeError(f"POST {name} 失败 HTTP {e.code}: {e.read().decode()}")
-
-          header("保存版本号到 GitHub Variables")
-
-          repo        = os.environ["REPO"]
-          new_version = os.environ["NEW_VERSION"]
-          new_code    = os.environ["NEW_CODE"]
-          token       = os.environ.get("GH_TOKEN", "")
-
-          if not token:
-              err("GH_TOKEN 未配置,无法写入 Variables")
-              err("请在仓库 Settings → Secrets 中配置 GH_TOKEN(需具备 repo 或 actions:write 权限)")
-              sys.exit(1)
-
-          if token.startswith("ghs_"):
-              warn("使用内置 GITHUB_TOKEN(ghs_…),依赖 'actions: write' 权限")
-          else:
-              ok("使用 PAT(secrets.GH_TOKEN)")
-
-          failed = False
-          for var_name, var_value in [
-              ("SERVER_VERSION",      new_version),
-              ("SERVER_VERSION_CODE", new_code),
-          ]:
-              try:
-                  action = set_variable(repo, var_name, var_value, token)
-                  ok(f"{var_name} → {var_value}({action})")
-              except RuntimeError as e:
-                  err(str(e))
-                  failed = True
-
-          if failed:
-              warn("版本号未能持久化,下次构建可能从默认值重新计数")
-              warn("请确认 GH_TOKEN 具备 repo 或 actions:write 权限")
-              sys.exit(1)
-          SCRIPT_END
-        env:
-          NEW_VERSION: ${{ steps.version.outputs.new_version }}
-          NEW_CODE:    ${{ steps.version.outputs.new_code }}
 
       - name: 📊 生成构建报告(Job Summary)
         if: always()
@@ -717,16 +569,10 @@ jobs:
           new_code    = os.environ.get("NEW_CODE",     "")
           tag_name    = os.environ.get("TAG_NAME",     "")
           event_name  = os.environ.get("GITHUB_EVENT_NAME", "push")
-          bump_major  = os.environ.get("INPUT_BUMP_MAJOR", "false").lower() == "true"
           commit_sha  = os.environ.get("GITHUB_SHA",   "unknown")[:7]
           repo        = os.environ.get("REPO",         "")
 
-          if event_name == "push":
-              trigger = "自动构建(push 触发)"
-          elif bump_major:
-              trigger = "手动大版本升级"
-          else:
-              trigger = "手动构建"
+          trigger = "自动构建(push 触发)" if event_name == "push" else "手动构建"
 
           assets = sorted(glob.glob("dist/*"))
           if assets:
@@ -770,4 +616,3 @@ jobs:
           NEW_VERSION:      ${{ steps.version.outputs.new_version }}
           NEW_CODE:         ${{ steps.version.outputs.new_code }}
           TAG_NAME:         ${{ steps.version.outputs.tag_name }}
-          INPUT_BUMP_MAJOR: ${{ inputs.bump_major }}
