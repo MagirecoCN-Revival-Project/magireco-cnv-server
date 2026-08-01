@@ -103,41 +103,6 @@ CREATE TABLE IF NOT EXISTS config (
   value           TEXT    NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS mirror_groups (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  name            TEXT    NOT NULL,
-  sort_order      INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS mirrors (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  group_id        INTEGER NOT NULL REFERENCES mirror_groups(id) ON DELETE CASCADE,
-  kind            TEXT    NOT NULL DEFAULT 'http',
-  url             TEXT    NOT NULL,
-  bucket          TEXT,
-  region          TEXT,
-  files           TEXT,
-  sort_order      INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS hot_bundles (
-  kind            TEXT    NOT NULL PRIMARY KEY,
-  version         INTEGER NOT NULL DEFAULT 0,
-  sha256          TEXT,
-  download_url    TEXT,
-  size            INTEGER NOT NULL DEFAULT -1,
-  published_at    INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS offline_package (
-  id              INTEGER PRIMARY KEY CHECK (id = 1),
-  download_url    TEXT,
-  package_version TEXT,
-  sha256          TEXT,
-  size            INTEGER NOT NULL DEFAULT 0,
-  uploaded_at     INTEGER
-);
-
 CREATE TABLE IF NOT EXISTS audit_log (
   id              TEXT    NOT NULL PRIMARY KEY,
   ts              INTEGER NOT NULL,
@@ -150,20 +115,3 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_log_type ON audit_log(type);
 CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor);
 
-CREATE TABLE IF NOT EXISTS secondary_nodes (
-  id              TEXT    NOT NULL PRIMARY KEY,
-  public_url      TEXT    NOT NULL,
-  region          TEXT,
-  region_label    TEXT,
-  files           TEXT,
-  cpu_pct         REAL,
-  mem_pct         REAL,
-  uptime_sec      INTEGER,
-  bytes_served    INTEGER,
-  active_dl       INTEGER,
-  cache_hit       REAL,
-  egress_bps      INTEGER,
-  registered_at   INTEGER NOT NULL,
-  last_seen       INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_secondary_last_seen ON secondary_nodes(last_seen DESC);

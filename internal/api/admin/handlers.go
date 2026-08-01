@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -23,7 +22,6 @@ import (
 	"magirecocn-revival/api-server/internal/autoban"
 	"magirecocn-revival/api-server/internal/capworker"
 	"magirecocn-revival/api-server/internal/middleware"
-	"magirecocn-revival/api-server/internal/packer"
 	"magirecocn-revival/api-server/internal/store"
 )
 
@@ -43,9 +41,6 @@ type Handler struct {
 	// Limits 运行时可调的大小上限(全局请求体 / 热更新包),由 main 注入并与
 	// BodyLimitFunc 中间件共享同一份 atomic。
 	Limits *Limits
-
-	// MirrorStats 镜像流量统计与限额管理；nil = 功能未启用。
-	MirrorStats *MirrorTracker
 }
 
 // HotUpdateConfig 热更新包"下载到本地 + 自托管"所需参数。
@@ -77,26 +72,6 @@ func (h *Handler) Routes(r chi.Router) {
 	r.Get("/services", h.servicesGet)
 	r.Put("/services", h.servicesPut)
 
-	r.Get("/mirrors", h.mirrorsGet)
-	r.Put("/mirrors", h.mirrorsPut)
-	r.Put("/mirrors/limits", h.mirrorLimitsPut)
-
-	r.Get("/offline-package", h.offlinePackageGet)
-	r.Put("/offline-package", h.offlinePackagePut)
-	r.Get("/pipeline", h.pipelineGet)
-	r.Put("/pipeline", h.pipelinePut)
-	r.Post("/pipeline/sync", h.pipelineSync)
-	r.Get("/auto-package", h.autoPackageGet)
-	r.Put("/auto-package", h.autoPackagePut)
-	r.Post("/auto-package/run", h.autoPackageRun)
-
-	r.Get("/hot-update/js", h.hotJSGet)
-	r.Post("/hot-update/js/publish", h.hotJSPublish) // 直链:服务端下载→校验→自托管
-	r.Post("/hot-update/js/upload", h.hotJSUpload)   // 上传:校验→自托管
-	r.Get("/hot-update/scenario", h.hotScenarioGet)
-	r.Post("/hot-update/scenario/publish", h.hotScenarioPublish)
-	r.Post("/hot-update/scenario/upload", h.hotScenarioUpload)
-
 	r.Get("/accounts", h.accountsList)
 	r.Post("/accounts", h.accountsCreate)
 	r.Get("/accounts/{id}", h.accountsDetail)
@@ -109,11 +84,7 @@ func (h *Handler) Routes(r chi.Router) {
 	r.Delete("/bans/{id}", h.bansLift)
 
 	r.Get("/heartbeats", h.heartbeatsList)
-	r.Post("/heartbeats/{deviceId}/switch-mirror", h.heartbeatsSwitch)
 	r.Post("/heartbeats/{deviceId}/ban", h.heartbeatsBan)
-
-	r.Get("/tasks", h.tasksGet)
-	r.Put("/tasks", h.tasksPut)
 
 	r.Get("/unverified-purge", h.unverifiedPurgeGet)
 	r.Put("/unverified-purge", h.unverifiedPurgePut)
@@ -431,431 +402,6 @@ func isValidHostname(s string) bool {
 	return true
 }
 
-// ── 6.3 资源:镜像 / 离线包 / 流水线 ──────────────────────────────────
-
-func (h *Handler) mirrorsGet(w http.ResponseWriter, r *http.Request) {
-	list, err := h.St.MirrorsListAll(r.Context())
-	if err != nil {
-		respond.Fail(w, http.StatusInternalServerError, "internal_error", "")
-		return
-	}
-	var statsSnap map[string]MirrorStatSnapshot
-	if h.MirrorStats != nil {
-		statsSnap = h.MirrorStats.Snapshot()
-	}
-	out := make([]map[string]any, 0, len(list))
-	for _, m := range list {
-		entry := map[string]any{
-			"kind":  m.Kind,
-			"url":   m.URL,
-			"group": m.GroupName,
-		}
-		if m.Bucket != nil {
-			entry["bucket"] = *m.Bucket
-		}
-		if m.Region != nil {
-			entry["region"] = *m.Region
-		}
-		if len(m.Files) > 0 {
-			// 直接透传存储的 JSON,不重新解析;前端按数组渲染
-			entry["files"] = json.RawMessage(m.Files)
-		}
-		if statsSnap != nil {
-			if snap, ok := statsSnap[m.URL]; ok {
-				entry["stats"] = snap
-			} else {
-				entry["stats"] = MirrorStatSnapshot{}
-			}
-		}
-		out = append(out, entry)
-	}
-	respond.OKRaw(w, map[string]any{"success": true, "mirrors": out})
-}
-
-// mirrorEntry 与前端 resources.jsx 镜像项一一对应。
-// files 可以是字符串数组(只有 key,size 未知)或对象数组([{key,size}])。
-type mirrorEntry struct {
-	Kind   string          `json:"kind"`
-	URL    string          `json:"url"`
-	Group  string          `json:"group,omitempty"`
-	Bucket string          `json:"bucket,omitempty"`
-	Region string          `json:"region,omitempty"`
-	Files  json.RawMessage `json:"files,omitempty"`
-}
-
-type mirrorsReq struct {
-	Mirrors []mirrorEntry `json:"mirrors"`
-}
-
-func (h *Handler) mirrorsPut(w http.ResponseWriter, r *http.Request) {
-	var req mirrorsReq
-	if !respond.ReadJSONAllowUnknown(w, r, &req) {
-		return
-	}
-	out := make([]store.MirrorWithGroup, 0, len(req.Mirrors))
-	for _, m := range req.Mirrors {
-		kind := m.Kind
-		if kind == "" {
-			kind = "http"
-		}
-		if kind != "http" && kind != "s3" {
-			respond.Fail(w, http.StatusBadRequest, "bad_kind", "镜像类型必须为 http 或 s3")
-			return
-		}
-		if !isSafeHTTPURL(m.URL) {
-			respond.Fail(w, http.StatusBadRequest, "bad_url", "镜像 URL 必须为 http(s)://")
-			return
-		}
-		if kind == "s3" && (m.Bucket == "" || len(m.Bucket) > 255) {
-			respond.Fail(w, http.StatusBadRequest, "bad_bucket", "S3 镜像必须提供 1–255 字符的 bucket")
-			return
-		}
-		groupName := strings.TrimSpace(m.Group)
-		if groupName == "" {
-			groupName = "默认线路"
-		}
-		if len(groupName) > 128 {
-			respond.Fail(w, http.StatusBadRequest, "bad_group", "组名最长 128 字符")
-			return
-		}
-		// 文件清单语法校验:必须是 [string] 或 [{key,size?}]
-		var filesJSON json.RawMessage
-		if len(m.Files) > 0 {
-			normalized, err := normalizeFileList(m.Files)
-			if err != nil {
-				respond.Fail(w, http.StatusBadRequest, "bad_files", err.Error())
-				return
-			}
-			filesJSON = normalized
-		}
-		entry := store.MirrorWithGroup{
-			Mirror:    store.Mirror{Kind: kind, URL: m.URL, Files: filesJSON},
-			GroupName: groupName,
-		}
-		if m.Bucket != "" {
-			b := m.Bucket
-			entry.Bucket = &b
-		}
-		if m.Region != "" {
-			rg := m.Region
-			entry.Region = &rg
-		}
-		out = append(out, entry)
-	}
-	if err := h.St.MirrorsReplaceAll(r.Context(), out); err != nil {
-		respond.Fail(w, http.StatusInternalServerError, "internal_error", "")
-		return
-	}
-	h.audit(r, "mirror.reorder", "", map[string]any{"count": len(out)})
-	respond.OK(w, nil)
-}
-
-// normalizeFileList 把前端发的 files(可能是 [string] 或 [{key,size?}])归一化成
-// [{key,size}] 形式存储。size 缺省为 -1(表示未知,客户端自行决定)。
-func normalizeFileList(raw json.RawMessage) (json.RawMessage, error) {
-	// 试着按 []string 先解
-	var asStrings []string
-	if err := json.Unmarshal(raw, &asStrings); err == nil {
-		out := make([]map[string]any, 0, len(asStrings))
-		for _, k := range asStrings {
-			k = strings.TrimSpace(k)
-			if k == "" {
-				continue
-			}
-			out = append(out, map[string]any{"key": k, "size": -1})
-		}
-		return json.Marshal(out)
-	}
-	// 再按 [{key,size?}] 解
-	var asObjs []struct {
-		Key  string `json:"key"`
-		Size *int64 `json:"size,omitempty"`
-	}
-	if err := json.Unmarshal(raw, &asObjs); err != nil {
-		return nil, errBadFiles
-	}
-	out := make([]map[string]any, 0, len(asObjs))
-	for _, o := range asObjs {
-		k := strings.TrimSpace(o.Key)
-		if k == "" {
-			continue
-		}
-		size := int64(-1)
-		if o.Size != nil {
-			size = *o.Size
-		}
-		out = append(out, map[string]any{"key": k, "size": size})
-	}
-	return json.Marshal(out)
-}
-
-// mirrorLimitsReq 单条镜像限额更新。
-type mirrorLimitsReq struct {
-	URL             string `json:"url"`
-	DailyLimitBytes int64  `json:"daily_limit_bytes"` // 0 = 不限
-	SpeedLimitBps   int64  `json:"speed_limit_bps"`   // 0 = 不限
-}
-
-func (h *Handler) mirrorLimitsPut(w http.ResponseWriter, r *http.Request) {
-	var req mirrorLimitsReq
-	if !respond.ReadJSONAllowUnknown(w, r, &req) {
-		return
-	}
-	if req.URL == "" {
-		respond.Fail(w, http.StatusBadRequest, "missing_url", "缺少镜像 URL")
-		return
-	}
-	if req.DailyLimitBytes < 0 {
-		req.DailyLimitBytes = 0
-	}
-	if req.SpeedLimitBps < 0 {
-		req.SpeedLimitBps = 0
-	}
-	if h.MirrorStats != nil {
-		if err := h.MirrorStats.SetLimits(r.Context(), req.URL, req.DailyLimitBytes, req.SpeedLimitBps); err != nil {
-			respond.Fail(w, http.StatusInternalServerError, "internal_error", "")
-			return
-		}
-	}
-	h.audit(r, "mirror.limits.update", short(req.URL, 64), map[string]any{
-		"daily_limit_bytes": req.DailyLimitBytes,
-		"speed_limit_bps":   req.SpeedLimitBps,
-	})
-	respond.OK(w, nil)
-}
-
-var errBadFiles = errors.New("files 必须是字符串数组或 [{key, size?}] 对象数组")
-
-// offlinePkgReq:离线包发布表单。MinVersion 用指针区分"未提供"与"显式清空"——
-// 未提供则不动 offline_pack 配置,显式空串则清除策略(客户端跳过版本检查)。
-// 见 server-offline-pack-validation.md §3 / §5。
-type offlinePkgReq struct {
-	URL        string  `json:"url"`
-	Version    string  `json:"version"`
-	SHA256     string  `json:"sha256"`
-	Size       int64   `json:"size"`
-	MinVersion *string `json:"min_version"`
-}
-
-// offlinePackPolicy 落库结构;与 client/state.go 的 offlinePackPolicy 同步。
-type offlinePackPolicy struct {
-	MinVersion string `json:"min_version"`
-}
-
-func (h *Handler) offlinePackageGet(w http.ResponseWriter, r *http.Request) {
-	p, _ := h.St.OfflinePackageGet(r.Context())
-	var pol offlinePackPolicy
-	_, _ = h.St.ConfigGet(r.Context(), "offline_pack", &pol)
-	respond.OKRaw(w, map[string]any{"success": true,
-		"url": p.DownloadURL, "version": p.PackageVersion, "sha256": p.SHA256,
-		"size": p.Size, "uploaded_at": p.UploadedAt,
-		"min_version": pol.MinVersion,
-	})
-}
-
-func (h *Handler) offlinePackagePut(w http.ResponseWriter, r *http.Request) {
-	var req offlinePkgReq
-	if !respond.ReadJSONAllowUnknown(w, r, &req) {
-		return
-	}
-	if req.URL != "" && !isSafeHTTPURL(req.URL) {
-		respond.Fail(w, http.StatusBadRequest, "bad_url", "离线包 URL 必须为 http(s)://")
-		return
-	}
-	now := time.Now().UnixMilli()
-	if err := h.St.OfflinePackageSet(r.Context(), store.OfflinePackage{
-		DownloadURL: req.URL, PackageVersion: req.Version, SHA256: strings.ToLower(req.SHA256),
-		Size: req.Size, UploadedAt: &now,
-	}); err != nil {
-		respond.Fail(w, http.StatusInternalServerError, "internal_error", "")
-		return
-	}
-	// 仅当表单显式带了 min_version 字段才动策略配置:运维只想换包不动版本门槛
-	// 的常见操作不该被误触。
-	if req.MinVersion != nil {
-		_ = h.St.ConfigSet(r.Context(), "offline_pack", offlinePackPolicy{
-			MinVersion: strings.TrimSpace(*req.MinVersion),
-		})
-	}
-	h.audit(r, "offline.publish", req.Version, nil)
-	respond.OK(w, nil)
-}
-
-// autoPackageCfg 离线包自动打包配置;前端 dispatch autoPackage.set patch
-// 直接 PUT 进来。字段名与 web/data.jsx initialAutoPackage / resources.jsx
-// AutoPackageCard 渲染一致。
-type autoPackageCfg struct {
-	Enabled        bool   `json:"enabled"`
-	IntervalSec    int    `json:"intervalSec"`
-	TriggerOn      string `json:"triggerOn"` // interval | new-release | both
-	RetainVersions int    `json:"retainVersions"`
-	Compress       string `json:"compress"` // zstd | gzip | none
-	LastRunAt      int64  `json:"lastRunAt"`
-	LastResult     string `json:"lastResult"` // ok | fail
-	InProgress     bool   `json:"inProgress"`
-}
-
-func defaultAutoPackage() autoPackageCfg {
-	return autoPackageCfg{
-		Enabled: false, IntervalSec: 21600, TriggerOn: "new-release",
-		RetainVersions: 3, Compress: "zstd",
-	}
-}
-
-func (h *Handler) autoPackageGet(w http.ResponseWriter, r *http.Request) {
-	c := defaultAutoPackage()
-	_, _ = h.St.ConfigGet(r.Context(), "auto_package", &c)
-	respond.JSON(w, http.StatusOK, map[string]any{"success": true,
-		"enabled": c.Enabled, "intervalSec": c.IntervalSec, "triggerOn": c.TriggerOn,
-		"retainVersions": c.RetainVersions, "compress": c.Compress,
-		"lastRunAt": c.LastRunAt, "lastResult": c.LastResult, "inProgress": c.InProgress,
-	})
-}
-
-func (h *Handler) autoPackagePut(w http.ResponseWriter, r *http.Request) {
-	cur := defaultAutoPackage()
-	_, _ = h.St.ConfigGet(r.Context(), "auto_package", &cur)
-	// 前端发的是部分 patch,合并到当前值。
-	var patch map[string]json.RawMessage
-	if !respond.ReadJSONAllowUnknown(w, r, &patch) {
-		return
-	}
-	merged, _ := json.Marshal(cur)
-	var mergedMap map[string]json.RawMessage
-	_ = json.Unmarshal(merged, &mergedMap)
-	for k, v := range patch {
-		mergedMap[k] = v
-	}
-	mergedJSON, _ := json.Marshal(mergedMap)
-	var next autoPackageCfg
-	if err := json.Unmarshal(mergedJSON, &next); err != nil {
-		respond.Fail(w, http.StatusBadRequest, "bad_payload", "")
-		return
-	}
-	if next.IntervalSec < 60 {
-		next.IntervalSec = 60
-	}
-	if err := h.St.ConfigSet(r.Context(), "auto_package", next); err != nil {
-		respond.Fail(w, http.StatusInternalServerError, "internal_error", "")
-		return
-	}
-	h.audit(r, "offline.auto_package.update", "", nil)
-	respond.OK(w, nil)
-}
-
-// autoPackageRun 立即触发一次打包。同步等待打包结束(典型几秒到几十秒,取决于
-// 资源量),完成后:
-//   - 写入 offline_package 表:URL/版本/sha256/size 全部刷新
-//   - 写入 auto_package 配置:last_run_at / last_result / in_progress=false
-//   - 返回 {success:true, version, sha256, size, download_url}
-//
-// 并发保护:in_progress=true 时 423 Locked,运维必须等上一次跑完。
-// 出错时返回 500,日志里给详细原因。
-func (h *Handler) autoPackageRun(w http.ResponseWriter, r *http.Request) {
-	if h.Pack.SourceDir == "" || h.Pack.DestDir == "" {
-		respond.Fail(w, http.StatusServiceUnavailable, "packer_disabled",
-			"未配置 CNV_PRIMARY_RES_DIR / CNV_OFFLINE_DIR,打包功能不可用")
-		return
-	}
-
-	// 抢锁:in_progress 字段当作互斥
-	cur := defaultAutoPackage()
-	_, _ = h.St.ConfigGet(r.Context(), "auto_package", &cur)
-	if cur.InProgress {
-		respond.Fail(w, http.StatusLocked, "packer_busy",
-			"已经有一次打包在跑,请等它结束")
-		return
-	}
-	cur.InProgress = true
-	_ = h.St.ConfigSet(r.Context(), "auto_package", cur)
-	// 无论成功失败,出函数时把锁释放
-	defer func() {
-		final := defaultAutoPackage()
-		_, _ = h.St.ConfigGet(r.Context(), "auto_package", &final)
-		final.InProgress = false
-		_ = h.St.ConfigSet(r.Context(), "auto_package", final)
-	}()
-
-	res, err := packer.RunOnce(r.Context(), packer.Config{
-		SourceDir:   h.Pack.SourceDir,
-		DestDir:     h.Pack.DestDir,
-		RetainN:     cur.RetainVersions,
-		Description: "auto-packaged via /admin/auto-package/run",
-	})
-	if err != nil {
-		// 失败也要记 last_result
-		cur.LastRunAt = time.Now().UnixMilli()
-		cur.LastResult = "fail"
-		_ = h.St.ConfigSet(r.Context(), "auto_package", cur)
-		h.audit(r, "offline.auto_package.fail", "", map[string]any{"err": err.Error()})
-		respond.Fail(w, http.StatusInternalServerError, "pack_failed", err.Error())
-		return
-	}
-
-	// 拼对外 URL
-	downloadURL := ""
-	if h.Pack.URLBase != nil {
-		downloadURL = strings.TrimRight(h.Pack.URLBase(r), "/") + "/" + res.Filename
-	}
-
-	// 离线包 S3 上传（已配置时覆盖本地 URL；失败不阻断主流程）
-	if s3URL, s3Err := h.uploadOfflineToS3(r.Context(), res.Path, res.Filename); s3Err != nil {
-		h.audit(r, "offline.s3_upload.fail", res.Version, map[string]any{"err": s3Err.Error()})
-	} else if s3URL != "" {
-		downloadURL = s3URL
-	}
-
-	// 刷新 offline_package 元数据
-	uploaded := time.Now().UnixMilli()
-	_ = h.St.OfflinePackageSet(r.Context(), store.OfflinePackage{
-		DownloadURL:    downloadURL,
-		PackageVersion: res.Version,
-		SHA256:         res.SHA256,
-		Size:           res.Size,
-		UploadedAt:     &uploaded,
-	})
-
-	cur.LastRunAt = time.Now().UnixMilli()
-	cur.LastResult = "ok"
-	_ = h.St.ConfigSet(r.Context(), "auto_package", cur)
-	h.audit(r, "offline.publish", res.Version,
-		map[string]any{"sha256_prefix": res.SHA256[:12], "size": res.Size})
-
-	respond.OKRaw(w, map[string]any{
-		"success":      true,
-		"version":      res.Version,
-		"sha256":       res.SHA256,
-		"size":         res.Size,
-		"download_url": downloadURL,
-		"filename":     res.Filename,
-	})
-}
-
-// ── 6.4 热更新 ─────────────────────────────────────────────────────────
-
-func (h *Handler) hotJSGet(w http.ResponseWriter, r *http.Request)       { h.hotGet(w, r, "js") }
-func (h *Handler) hotScenarioGet(w http.ResponseWriter, r *http.Request) { h.hotGet(w, r, "scenario") }
-
-func (h *Handler) hotGet(w http.ResponseWriter, r *http.Request, kind string) {
-	b, _ := h.St.HotBundleGet(r.Context(), kind)
-	respond.OKRaw(w, map[string]any{"success": true,
-		"version": b.Version, "sha256": b.SHA256, "size": b.Size,
-		"download_url": b.DownloadURL, "published_at": b.PublishedAt,
-	})
-}
-
-// 直链发布与上传发布的薄包装;实现见 hotupdate.go(下载/校验 zip/落盘/自托管)。
-func (h *Handler) hotJSPublish(w http.ResponseWriter, r *http.Request) { h.hotPublishURL(w, r, "js") }
-func (h *Handler) hotScenarioPublish(w http.ResponseWriter, r *http.Request) {
-	h.hotPublishURL(w, r, "scenario")
-}
-func (h *Handler) hotJSUpload(w http.ResponseWriter, r *http.Request) { h.hotUpload(w, r, "js") }
-func (h *Handler) hotScenarioUpload(w http.ResponseWriter, r *http.Request) {
-	h.hotUpload(w, r, "scenario")
-}
-
-// ── 6.5 账号管理 ───────────────────────────────────────────────────────
-
 func (h *Handler) accountsList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	status := r.URL.Query().Get("status")
@@ -1089,25 +635,6 @@ type switchMirrorReq struct {
 	Message           string            `json:"message"`
 }
 
-func (h *Handler) heartbeatsSwitch(w http.ResponseWriter, r *http.Request) {
-	did := chi.URLParam(r, "deviceId")
-	var req switchMirrorReq
-	if !respond.ReadJSONAllowUnknown(w, r, &req) {
-		return
-	}
-	for _, v := range req.MirrorAssignments {
-		if !isSafeHTTPURL(v) {
-			respond.Fail(w, http.StatusBadRequest, "bad_url", "镜像 URL 必须为 http(s)://")
-			return
-		}
-	}
-	h.Hearts.QueueSwitch(did, &client.SwitchAssignment{
-		MirrorAssignments: req.MirrorAssignments, Message: req.Message,
-	})
-	h.audit(r, "heartbeat.force_switch", short(did, 16), nil)
-	respond.OK(w, nil)
-}
-
 type hbBanReq struct {
 	Reason string `json:"reason"`
 }
@@ -1144,35 +671,6 @@ type tasksCfg struct {
 	SessionGCSec         int `json:"session_gc_sec"`
 	CapWorkerHealthSec   int `json:"cap_worker_health_sec"`
 }
-
-func defaultTasks() tasksCfg {
-	return tasksCfg{15, 60, 3600, 30, 900, 120}
-}
-
-func (h *Handler) tasksGet(w http.ResponseWriter, r *http.Request) {
-	c := defaultTasks()
-	_, _ = h.St.ConfigGet(r.Context(), "tasks", &c)
-	respond.JSON(w, http.StatusOK, map[string]any{"success": true,
-		"heartbeat_timeout_sec": c.HeartbeatTimeoutSec, "ban_auto_expire_scan_sec": c.BanAutoExpireScanSec,
-		"ban_sweep_sec": c.BanSweepSec, "metrics_flush_sec": c.MetricsFlushSec,
-		"session_gc_sec": c.SessionGCSec, "cap_worker_health_sec": c.CapWorkerHealthSec,
-	})
-}
-
-func (h *Handler) tasksPut(w http.ResponseWriter, r *http.Request) {
-	var req tasksCfg
-	if !respond.ReadJSONAllowUnknown(w, r, &req) {
-		return
-	}
-	if err := h.St.ConfigSet(r.Context(), "tasks", req); err != nil {
-		respond.Fail(w, http.StatusInternalServerError, "internal_error", "")
-		return
-	}
-	h.audit(r, "task.interval.update", "", nil)
-	respond.OK(w, nil)
-}
-
-// ── 未验证账号自动清理 ─────────────────────────────────────────────────
 
 type unverifiedPurgeCfg struct {
 	Enabled    bool  `json:"enabled"`
@@ -1536,49 +1034,8 @@ func (h *Handler) aggregateState(w http.ResponseWriter, r *http.Request) {
 	_, _ = h.St.ConfigGet(r.Context(), "versions", &versions)
 	captcha := defaultCaptcha()
 	_, _ = h.St.ConfigGet(r.Context(), "captcha", &captcha)
-	tasks := defaultTasks()
-	_, _ = h.St.ConfigGet(r.Context(), "tasks", &tasks)
 	unverifiedPurge := defaultUnverifiedPurge()
 	_, _ = h.St.ConfigGet(r.Context(), "unverified_purge", &unverifiedPurge)
-	rawMirrors, _ := h.St.MirrorsListAll(r.Context())
-	var aggStatsSnap map[string]MirrorStatSnapshot
-	if h.MirrorStats != nil {
-		aggStatsSnap = h.MirrorStats.Snapshot()
-	}
-	mirrors := make([]map[string]any, 0, len(rawMirrors))
-	for _, m := range rawMirrors {
-		entry := map[string]any{
-			"kind":  m.Kind,
-			"url":   m.URL,
-			"group": m.GroupName,
-		}
-		if m.Bucket != nil {
-			entry["bucket"] = *m.Bucket
-		}
-		if m.Region != nil {
-			entry["region"] = *m.Region
-		}
-		if len(m.Files) > 0 {
-			entry["files"] = json.RawMessage(m.Files)
-		}
-		if aggStatsSnap != nil {
-			if snap, ok := aggStatsSnap[m.URL]; ok {
-				entry["stats"] = snap
-			} else {
-				entry["stats"] = MirrorStatSnapshot{}
-			}
-		}
-		mirrors = append(mirrors, entry)
-	}
-	js, _ := h.St.HotBundleGet(r.Context(), "js")
-	scn, _ := h.St.HotBundleGet(r.Context(), "scenario")
-	off, _ := h.St.OfflinePackageGet(r.Context())
-	var offlinePolicy offlinePackPolicy
-	_, _ = h.St.ConfigGet(r.Context(), "offline_pack", &offlinePolicy)
-	autoPkg := defaultAutoPackage()
-	_, _ = h.St.ConfigGet(r.Context(), "auto_package", &autoPkg)
-	pipeline := defaultPipeline()
-	_, _ = h.St.ConfigGet(r.Context(), "pipeline", &pipeline)
 	var svc servicesCfg
 	_, _ = h.St.ConfigGet(r.Context(), "services", &svc)
 	if svc.ProxyBackends == nil {
@@ -1604,19 +1061,8 @@ func (h *Handler) aggregateState(w http.ResponseWriter, r *http.Request) {
 		"download":         dl,
 		"versions":         versions,
 		"services":         svc,
-		"mirrors":          mirrors,
-		"hot_bundles":      map[string]any{"js": js, "scenario": scn},
-		"offline_package":  off,
-		"offline_pack":     map[string]any{"min_version": offlinePolicy.MinVersion},
-		"auto_package":     autoPkg,
-		"pipeline": func() map[string]any {
-			v := pipelineSafeView(pipeline)
-			v["releases"] = []any{}
-			return v
-		}(),
 		"captcha":          captcha,
 		"autoban":          autoban.Load(r.Context(), h.St),
-		"tasks":            tasks,
 		"unverified_purge": map[string]any{"enabled": unverifiedPurge.Enabled, "retain_days": unverifiedPurge.RetainDays, "scan_sec": unverifiedPurge.ScanSec},
 		"limits":           limitsState(h.Limits),
 		"active_bans":      mapBans(activeBans),

@@ -28,15 +28,15 @@ type Account struct {
 
 // AccountSession 玩家会话(token = account_token)。
 type AccountSession struct {
-	Token       string
-	AccountID   string
-	DeviceName  string
-	OS          string
-	IP          string
-	Region      string
-	CreatedAt   int64
-	LastSeenAt  int64
-	ExpiresAt   int64
+	Token      string
+	AccountID  string
+	DeviceName string
+	OS         string
+	IP         string
+	Region     string
+	CreatedAt  int64
+	LastSeenAt int64
+	ExpiresAt  int64
 }
 
 // AdminSession 管理员会话。
@@ -88,10 +88,10 @@ type Device struct {
 type Mirror struct {
 	ID        int64
 	GroupID   int64
-	Kind      string  // "http"(默认)| "s3"
+	Kind      string // "http"(默认)| "s3"
 	URL       string
-	Bucket    *string // 仅 kind="s3" 用
-	Region    *string // 仅 kind="s3" 用
+	Bucket    *string         // 仅 kind="s3" 用
+	Region    *string         // 仅 kind="s3" 用
 	Files     json.RawMessage // 可为 nil;非 nil 时是 [{key, size?}] 或 [key] 数组
 	SortOrder int
 }
@@ -118,12 +118,12 @@ type MirrorGroupWithMirrors struct {
 
 // HotBundle 热更新包。
 type HotBundle struct {
-	Kind         string // js | scenario
-	Version      int
-	SHA256       string
-	DownloadURL  string
-	Size         int64
-	PublishedAt  *int64
+	Kind        string // js | scenario
+	Version     int
+	SHA256      string
+	DownloadURL string
+	Size        int64
+	PublishedAt *int64
 }
 
 // OfflinePackage 离线包单例。

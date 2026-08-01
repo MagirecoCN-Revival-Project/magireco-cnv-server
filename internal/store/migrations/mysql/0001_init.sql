@@ -108,43 +108,6 @@ CREATE TABLE IF NOT EXISTS config (
   value           JSON         NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS mirror_groups (
-  id              BIGINT       NOT NULL AUTO_INCREMENT PRIMARY KEY,
-  name            VARCHAR(128) NOT NULL,
-  sort_order      INT          NOT NULL DEFAULT 0
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS mirrors (
-  id              BIGINT       NOT NULL AUTO_INCREMENT PRIMARY KEY,
-  group_id        BIGINT       NOT NULL,
-  kind            VARCHAR(16)  NOT NULL DEFAULT 'http',
-  url             VARCHAR(512) NOT NULL,
-  bucket          VARCHAR(255),
-  region          VARCHAR(64),
-  files           JSON,
-  sort_order      INT          NOT NULL DEFAULT 0,
-  FOREIGN KEY (group_id) REFERENCES mirror_groups(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS hot_bundles (
-  kind            VARCHAR(32)  NOT NULL PRIMARY KEY,
-  version         INT          NOT NULL DEFAULT 0,
-  sha256          VARCHAR(128),
-  download_url    VARCHAR(512),
-  size            BIGINT       NOT NULL DEFAULT -1,
-  published_at    BIGINT
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS offline_package (
-  id              INT          NOT NULL PRIMARY KEY,
-  download_url    VARCHAR(512),
-  package_version VARCHAR(64),
-  sha256          VARCHAR(128),
-  size            BIGINT       NOT NULL DEFAULT 0,
-  uploaded_at     BIGINT,
-  CHECK (id = 1)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 CREATE TABLE IF NOT EXISTS audit_log (
   id              VARCHAR(64)  NOT NULL PRIMARY KEY,
   ts              BIGINT       NOT NULL,
@@ -157,20 +120,3 @@ CREATE TABLE IF NOT EXISTS audit_log (
   INDEX idx_audit_log_actor (actor)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS secondary_nodes (
-  id              VARCHAR(128) NOT NULL PRIMARY KEY,
-  public_url      VARCHAR(512) NOT NULL,
-  region          VARCHAR(64),
-  region_label    VARCHAR(64),
-  files           JSON,
-  cpu_pct         DOUBLE,
-  mem_pct         DOUBLE,
-  uptime_sec      BIGINT,
-  bytes_served    BIGINT,
-  active_dl       INT,
-  cache_hit       DOUBLE,
-  egress_bps      BIGINT,
-  registered_at   BIGINT       NOT NULL,
-  last_seen       BIGINT       NOT NULL,
-  INDEX idx_secondary_last_seen (last_seen DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

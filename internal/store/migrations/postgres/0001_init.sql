@@ -105,42 +105,6 @@ CREATE TABLE IF NOT EXISTS config (
   value           JSONB NOT NULL
 );
 
--- 镜像组与镜像
-CREATE TABLE IF NOT EXISTS mirror_groups (
-  id              BIGSERIAL PRIMARY KEY,
-  name            TEXT NOT NULL,
-  sort_order      INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS mirrors (
-  id              BIGSERIAL PRIMARY KEY,
-  group_id        BIGINT NOT NULL REFERENCES mirror_groups(id) ON DELETE CASCADE,
-  kind            TEXT NOT NULL DEFAULT 'http',        -- http | s3
-  url             TEXT NOT NULL,
-  bucket          TEXT,                                -- 仅 kind='s3' 用:桶名
-  region          TEXT,                                -- 仅 kind='s3' 用:区域
-  files           JSONB,                               -- 内联文件清单(可空,触发 S3 XML 发现)
-  sort_order      INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS hot_bundles (
-  kind            TEXT PRIMARY KEY,                    -- js | scenario
-  version         INTEGER NOT NULL DEFAULT 0,
-  sha256          TEXT,
-  download_url    TEXT,
-  size            BIGINT NOT NULL DEFAULT -1,
-  published_at    BIGINT
-);
-
-CREATE TABLE IF NOT EXISTS offline_package (
-  id              INTEGER PRIMARY KEY CHECK (id = 1),  -- 单例
-  download_url    TEXT,
-  package_version TEXT,
-  sha256          TEXT,
-  size            BIGINT NOT NULL DEFAULT 0,
-  uploaded_at     BIGINT
-);
-
 CREATE TABLE IF NOT EXISTS audit_log (
   id              TEXT PRIMARY KEY,
   ts              BIGINT NOT NULL,
@@ -153,21 +117,3 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_log_type ON audit_log(type);
 CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor);
 
--- 副节点心跳记录(主节点持有)
-CREATE TABLE IF NOT EXISTS secondary_nodes (
-  id              TEXT PRIMARY KEY,
-  public_url      TEXT NOT NULL,
-  region          TEXT,
-  region_label    TEXT,
-  files           JSONB,
-  cpu_pct         REAL,
-  mem_pct         REAL,
-  uptime_sec      BIGINT,
-  bytes_served    BIGINT,
-  active_dl       INTEGER,
-  cache_hit       REAL,
-  egress_bps      BIGINT,
-  registered_at   BIGINT NOT NULL,
-  last_seen       BIGINT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_secondary_last_seen ON secondary_nodes(last_seen DESC);

@@ -170,12 +170,9 @@ func main() {
 		_ = ctrlHTTP.Shutdown(shCtx)
 	}()
 
-	switch cfg.NodeRole {
-	case "edge":
-		runEdge(ctx, cfg, tel, log)
-	default:
-		runBusiness(ctx, cfg, directoryJSON, tel, log)
-	}
+	// API 服务端只有一种角色。边缘节点(纯静态资源分发)属于资源分发服务端,
+	// 在那边实现——两边各留一份等于又造出一处重叠。
+	runBusiness(ctx, cfg, directoryJSON, tel, log)
 }
 
 // telemetryFn 返回一个采集本进程运行指标的闭包;NodeRole 固定为启动角色。
@@ -215,39 +212,6 @@ func buildCommands(cancelProcess context.CancelFunc) map[string]control.CommandF
 	}
 }
 
-// runEdge 以边缘角色运行：仅提供静态资源下载。
-func runEdge(ctx context.Context, cfg *config.Config, tel func() control.Telemetry, log *slog.Logger) {
-	middleware.ConfigureTrustProxy(cfg.TrustProxy)
-
-	r := chi.NewRouter()
-	r.Use(middleware.Recovery, middleware.Logger, middleware.SecurityHeaders)
-	r.Use(middleware.BodyLimit(8 << 20))
-
-	resDir := os.Getenv("CNV_SECONDARY_RES_DIR")
-	if resDir == "" {
-		resDir = cfg.PrimaryResDir
-	}
-	if resDir != "" {
-		serveResources(r, cfg.PrimaryResPath, resDir)
-		log.Info("资源目录已挂载", "path", cfg.PrimaryResPath, "dir", resDir)
-	}
-	if cfg.OfflineDir != "" {
-		serveResources(r, cfg.OfflineURLPath, cfg.OfflineDir)
-	}
-
-	// 根目录只读实时状态页(所有节点统一)。
-	mountStatus(r, cfg.NodeID, version, startTime, tel)
-
-	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
-	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
-		respond.Fail(w, http.StatusNotFound, "not_found", "")
-	})
-
-	log.Info("边缘节点启动", "addr", cfg.Addr)
-	startHTTP(ctx, cfg, r, log)
-}
-
-// runBusiness 以业务角色运行：完整游戏 API 栈 + DB。
 func runBusiness(ctx context.Context, cfg *config.Config, dirJSON json.RawMessage, tel func() control.Telemetry, log *slog.Logger) {
 	st, err := store.Open(ctx, cfg.DBURL)
 	if err != nil {
@@ -266,10 +230,6 @@ func runBusiness(ctx context.Context, cfg *config.Config, dirJSON json.RawMessag
 
 	capSvc := capworker.New(st, capworker.DefaultConfig())
 	hearts := client.NewHeartbeats()
-
-	// 镜像流量统计：从 DB 载入历史数据与限额配置。
-	mirrorStats := admin.NewMirrorTracker(st)
-	mirrorStats.Load(ctx)
 
 	// 运行时可调的大小上限(全局请求体 / 热更新包):初值取 env/默认,启动时尝试用
 	// config 表 "limits" 覆盖;管理员在后台「服务器控制」改后即时生效(共享 atomic)。
@@ -389,35 +349,6 @@ func runBusiness(ctx context.Context, cfg *config.Config, dirJSON json.RawMessag
 		Hearts:       hearts,
 		Cap:          capSvc,
 		RequireSuper: middleware.RequireSuperAdmin(st),
-		Pack: admin.PackerConfig{
-			SourceDir: cfg.PrimaryResDir,
-			DestDir:   cfg.OfflineDir,
-			URLBase: func(req *http.Request) string {
-				if cfg.PublicURL != "" {
-					return strings.TrimRight(cfg.PublicURL, "/") + cfg.OfflineURLPath
-				}
-				scheme := "http"
-				if req.TLS != nil {
-					scheme = "https"
-				}
-				return scheme + "://" + req.Host + cfg.OfflineURLPath
-			},
-		},
-		HotUpdate: admin.HotUpdateConfig{
-			Dir: cfg.HotUpdateDir,
-			URLBase: func(req *http.Request) string {
-				if cfg.PublicURL != "" {
-					return strings.TrimRight(cfg.PublicURL, "/") + cfg.HotUpdateURLPath
-				}
-				scheme := "http"
-				if req.TLS != nil {
-					scheme = "https"
-				}
-				return scheme + "://" + req.Host + cfg.HotUpdateURLPath
-			},
-		},
-		Limits:      limits,
-		MirrorStats: mirrorStats,
 	}
 	r.Group(func(g chi.Router) {
 		g.Use(middleware.RequireWritableAdmin(st))
@@ -432,17 +363,6 @@ func runBusiness(ctx context.Context, cfg *config.Config, dirJSON json.RawMessag
 
 	setupH := &setup.Handler{St: st}
 	r.Route("/setup", setupH.Routes)
-
-	if cfg.PrimaryResDir != "" {
-		serveResources(r, cfg.PrimaryResPath, cfg.PrimaryResDir)
-	}
-	if cfg.OfflineDir != "" {
-		serveResources(r, cfg.OfflineURLPath, cfg.OfflineDir)
-	}
-	// 热更新包自托管:管理员发布/上传后落盘到 HotUpdateDir,经此对外分发。
-	if cfg.HotUpdateDir != "" {
-		serveResources(r, cfg.HotUpdateURLPath, cfg.HotUpdateDir)
-	}
 
 	// 人类可见的前端面板(管理后台/登录/注册/用户中心)已交由面板托管,
 	// 业务节点不再在根目录托管 WebUI;根目录改为只读实时状态页。
@@ -459,12 +379,9 @@ func runBusiness(ctx context.Context, cfg *config.Config, dirJSON json.RawMessag
 	})
 
 	sch := &scheduler.Scheduler{
-		St:            st,
-		Hearts:        hearts,
-		Log:           log,
-		PackSourceDir: cfg.PrimaryResDir,
-		PackDestDir:   cfg.OfflineDir,
-		MirrorStats:   mirrorStats,
+		St:     st,
+		Hearts: hearts,
+		Log:    log,
 		OfflineURL: func() string {
 			if cfg.PublicURL != "" {
 				return strings.TrimRight(cfg.PublicURL, "/") + cfg.OfflineURLPath
@@ -547,18 +464,6 @@ func resolveResourceTokenSecret(ctx context.Context, st *store.Store, log *slog.
 	return key, nil
 }
 
-func serveResources(r chi.Router, base, dir string) {
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return
-	}
-	fs := http.FileServer(http.Dir(abs))
-	r.Get(base+"/*", http.StripPrefix(base, fs).ServeHTTP)
-}
-
-// serveWebAssets 在「未接入面板」的回落场景下挂载本地静态资源(样式/脚本/入口页),
-// 让客户端打开的 /account/register 等本地页面能正常渲染。
-// 不接管根目录 "/"——根目录恒为只读状态页(见 mountStatus)。
 func serveWebAssets(r chi.Router, dir string) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {

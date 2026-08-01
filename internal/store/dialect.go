@@ -3,9 +3,9 @@
 // upsert)通过 Dialect 暴露的辅助方法生成。
 //
 // 三种方言:
-//   * postgres:历史上的主目标,JSONB + ON CONFLICT + RETURNING
-//   * mysql:JSON 列,ON DUPLICATE KEY UPDATE,无 RETURNING
-//   * sqlite:TEXT 模拟 JSON,3.35+ 支持 ON CONFLICT + RETURNING
+//   - postgres:历史上的主目标,JSONB + ON CONFLICT + RETURNING
+//   - mysql:JSON 列,ON DUPLICATE KEY UPDATE,无 RETURNING
+//   - sqlite:TEXT 模拟 JSON,3.35+ 支持 ON CONFLICT + RETURNING
 package store
 
 import (
@@ -17,9 +17,9 @@ import (
 type Driver string
 
 const (
-	DriverPostgres Driver = "pgx"     // pgx/v5/stdlib
-	DriverMySQL    Driver = "mysql"   // go-sql-driver/mysql
-	DriverSQLite   Driver = "sqlite"  // modernc.org/sqlite
+	DriverPostgres Driver = "pgx"    // pgx/v5/stdlib
+	DriverMySQL    Driver = "mysql"  // go-sql-driver/mysql
+	DriverSQLite   Driver = "sqlite" // modernc.org/sqlite
 )
 
 // Dialect 把方言差异收敛到几个方法里。
@@ -39,10 +39,10 @@ type Dialect interface {
 // UpsertSpec 描述一次 upsert:列、主键冲突时要 UPDATE 的列,以及是否需要回写自增 id。
 type UpsertSpec struct {
 	Table        string
-	Columns      []string  // 全部待插入列
-	ConflictCols []string  // ON CONFLICT 检测列(通常是 PK / UNIQUE)
-	UpdateCols   []string  // 冲突时 UPDATE 的列(必须是 Columns 的子集)
-	ReturningID  bool      // 是否要回写自增 id
+	Columns      []string // 全部待插入列
+	ConflictCols []string // ON CONFLICT 检测列(通常是 PK / UNIQUE)
+	UpdateCols   []string // 冲突时 UPDATE 的列(必须是 Columns 的子集)
+	ReturningID  bool     // 是否要回写自增 id
 }
 
 // DetectDialect 从 DSN 推断方言。
@@ -107,8 +107,8 @@ func mysqlURLToDSN(u string) string {
 
 type postgresDialect struct{}
 
-func (postgresDialect) Driver() Driver                { return DriverPostgres }
-func (postgresDialect) LastInsertIDSupported() bool  { return false }
+func (postgresDialect) Driver() Driver              { return DriverPostgres }
+func (postgresDialect) LastInsertIDSupported() bool { return false }
 
 func (postgresDialect) Rebind(q string) string {
 	var b strings.Builder
@@ -148,7 +148,7 @@ func (postgresDialect) Upsert(s UpsertSpec) (string, bool) {
 
 type mysqlDialect struct{}
 
-func (mysqlDialect) Driver() Driver               { return DriverMySQL }
+func (mysqlDialect) Driver() Driver              { return DriverMySQL }
 func (mysqlDialect) LastInsertIDSupported() bool { return true }
 func (mysqlDialect) Rebind(q string) string      { return q } // ? 原样
 
@@ -169,9 +169,9 @@ func (mysqlDialect) Upsert(s UpsertSpec) (string, bool) {
 
 type sqliteDialect struct{}
 
-func (sqliteDialect) Driver() Driver                { return DriverSQLite }
-func (sqliteDialect) LastInsertIDSupported() bool  { return true }
-func (sqliteDialect) Rebind(q string) string       { return q }
+func (sqliteDialect) Driver() Driver              { return DriverSQLite }
+func (sqliteDialect) LastInsertIDSupported() bool { return true }
+func (sqliteDialect) Rebind(q string) string      { return q }
 
 func (sqliteDialect) Upsert(s UpsertSpec) (string, bool) {
 	// SQLite 3.24+ 支持 ON CONFLICT;3.35+ 支持 RETURNING。modernc.org/sqlite 已经够新。

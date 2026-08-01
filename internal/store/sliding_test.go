@@ -8,9 +8,9 @@ import (
 )
 
 // TestAccountSessionTouch_SlidingRenewal 锁定"记住登录"的滑动续期语义:
-//   * ttl=0      → 只更 last_seen,expires_at 不动
-//   * 剩余 > ttl/2 → 不续期(防止每次请求都写库)
-//   * 剩余 < ttl/2 → expires_at 推到 now+ttl
+//   - ttl=0      → 只更 last_seen,expires_at 不动
+//   - 剩余 > ttl/2 → 不续期(防止每次请求都写库)
+//   - 剩余 < ttl/2 → expires_at 推到 now+ttl
 //
 // 客户端 token 寿命说明文档 §3 依赖于此。
 func TestAccountSessionTouch_SlidingRenewal(t *testing.T) {

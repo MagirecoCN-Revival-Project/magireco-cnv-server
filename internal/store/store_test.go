@@ -67,7 +67,9 @@ func TestSQLite_Smoke(t *testing.T) {
 	}
 
 	// config: KV roundtrip
-	type kv struct{ A int `json:"a"` }
+	type kv struct {
+		A int `json:"a"`
+	}
 	if err := st.ConfigSet(ctx, "smoke", kv{A: 42}); err != nil {
 		t.Fatal(err)
 	}
@@ -93,15 +95,6 @@ func TestSQLite_Smoke(t *testing.T) {
 	d, _, sz, err := st.SaveGet(ctx, "acc_1")
 	if err != nil || string(d) != string(raw) || sz != int64(len(raw)) {
 		t.Fatalf("SaveGet: %v %s %d", err, d, sz)
-	}
-
-	// mirrors: replace + flat list(走 RETURNING id 路径)
-	if err := st.MirrorsReplaceFlat(ctx, []string{"https://a/", "https://b/"}); err != nil {
-		t.Fatal(err)
-	}
-	urls, err := st.MirrorsFlatList(ctx)
-	if err != nil || len(urls) != 2 || urls[0] != "https://a/" {
-		t.Fatalf("MirrorsFlatList: %v %v", err, urls)
 	}
 
 	// ban: insert + active + lift

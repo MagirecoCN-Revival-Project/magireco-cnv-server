@@ -4,12 +4,10 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"time"
 
 	"magirecocn-revival/api-server/internal/api/client"
-	"magirecocn-revival/api-server/internal/packer"
 	"magirecocn-revival/api-server/internal/store"
 )
 
@@ -41,8 +39,6 @@ type Scheduler struct {
 	Log    *slog.Logger
 
 	// 离线包打包参数,由 main 注入。SourceDir 为空时跳过这个 goroutine。
-	PackSourceDir string
-	PackDestDir   string
 	// OfflineURL 拼对外下载 URL 的回调;失败时只更 sha256/version,不动 URL。
 	OfflineURL func() string
 
@@ -72,10 +68,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 		})
 	}
 
-	// 离线包自动打包(从 config.auto_package 读 enabled + intervalSec)。
-	if s.PackSourceDir != "" && s.PackDestDir != "" {
-		go s.runAutoPackage(ctx)
-	}
+	// 离线包自动打包已随资源分发面移交资源分发服务端(magirecocn-resource-server)。
 }
 
 // unverifiedPurgeCfg 对应 config 表 "unverified_purge" 键。
@@ -122,94 +115,6 @@ func (s *Scheduler) runUnverifiedPurge(ctx context.Context) {
 			}
 			lastRun = time.Now()
 		}
-	}
-}
-
-// autoPackageCfg 与 admin.autoPackageCfg 同字段;独立定义避免 import cycle。
-type autoPackageCfg struct {
-	Enabled        bool   `json:"enabled"`
-	IntervalSec    int    `json:"intervalSec"`
-	RetainVersions int    `json:"retainVersions"`
-	LastRunAt      int64  `json:"lastRunAt"`
-	LastResult     string `json:"lastResult"`
-	InProgress     bool   `json:"inProgress"`
-}
-
-// runAutoPackage 周期性看 auto_package 配置:enabled=true 且距上次 LastRunAt
-// 超过 intervalSec 时就跑一次。检查间隔取 intervalSec 与 60s 的较小值,
-// 保证配置改成更频繁时能及时生效。
-func (s *Scheduler) runAutoPackage(ctx context.Context) {
-	check := func() {
-		var raw json.RawMessage
-		// 直接读全部字段,避免和 admin 包重复定义结构体
-		ok, err := s.St.ConfigGet(ctx, "auto_package", &raw)
-		if err != nil || !ok {
-			return
-		}
-		var c autoPackageCfg
-		if err := json.Unmarshal(raw, &c); err != nil {
-			return
-		}
-		if !c.Enabled || c.InProgress {
-			return
-		}
-		interval := time.Duration(c.IntervalSec) * time.Second
-		if interval < time.Minute {
-			interval = time.Minute
-		}
-		if c.LastRunAt != 0 && time.Since(time.UnixMilli(c.LastRunAt)) < interval {
-			return
-		}
-		s.runPackOnce(ctx, c)
-	}
-	t := time.NewTicker(time.Minute)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			check()
-		}
-	}
-}
-
-// runPackOnce 抢锁 → 打包 → 落库 → 释放锁。与 /admin/auto-package/run 同语义。
-func (s *Scheduler) runPackOnce(ctx context.Context, c autoPackageCfg) {
-	c.InProgress = true
-	_ = s.St.ConfigSet(ctx, "auto_package", c)
-	defer func() {
-		c.InProgress = false
-		c.LastRunAt = time.Now().UnixMilli()
-		_ = s.St.ConfigSet(ctx, "auto_package", c)
-	}()
-	res, err := packer.RunOnce(ctx, packer.Config{
-		SourceDir:   s.PackSourceDir,
-		DestDir:     s.PackDestDir,
-		RetainN:     c.RetainVersions,
-		Description: "scheduled auto-package",
-	})
-	if err != nil {
-		c.LastResult = "fail"
-		if s.Log != nil {
-			s.Log.Warn("auto-package 失败", "err", err)
-		}
-		return
-	}
-	c.LastResult = "ok"
-	url := ""
-	if s.OfflineURL != nil {
-		url = s.OfflineURL() + "/" + res.Filename
-	}
-	uploaded := time.Now().UnixMilli()
-	_ = s.St.OfflinePackageSet(ctx, store.OfflinePackage{
-		DownloadURL: url, PackageVersion: res.Version,
-		SHA256: res.SHA256, Size: res.Size, UploadedAt: &uploaded,
-	})
-	if s.Log != nil {
-		s.Log.Info("auto-package 完成",
-			"version", res.Version, "size", res.Size,
-			"sha256_prefix", res.SHA256[:12])
 	}
 }
 
