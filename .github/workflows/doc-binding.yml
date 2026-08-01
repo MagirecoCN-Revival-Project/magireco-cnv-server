@@ -3,25 +3,29 @@ name: 📎 文档绑定提醒
 # ─────────────────────────────────────────────────────────────────────────
 # 纯「提醒」工作流，不拦截合并。
 #
-# 当 PR 满足以下任一条件、却没有在同一 PR 内更新 docs/ 时，贴一条「会自我
+# ⚠ 判据已变更：文档不在本仓库了。文档已迁至独立仓库 magireco-cnv-docs
+# （https://docs.magireco.top），跨仓库无法在同一 PR 内改完，故合规判据从
+# 「本 PR 是否改了 docs/」换成「PR 描述里是否写明了对应的文档改动」。
+# 这确实更弱——只能核验声明，无法核验事实——但好过留一条恒假的规则天天误报。
+#
+# 当 PR 满足以下任一条件、却没有在 PR 描述里说明文档改动时，贴一条「会自我
 # 消除」的提醒评论；合规时静默，若此前贴过提醒则改写为「已解除」：
 #
-#   (A) 契约级——改动 internal/api/client|account/（客户端可见契约字段/语义）。
+#   (A) 契约级——改动 internal/api/client/（客户端可见契约字段/语义）。
 #   (B) 结构级——cmd/ 或 internal/ 下有 .go 文件被新增/删除/重命名（足以让
 #       codebase-tour / configuration / nodes / architecture 等文档失真；
 #       排除 _test.go）。
 #
-# 纪律出处：CLAUDE.md §4、docs/contributing/discipline.md。
+# 纪律出处：CLAUDE.md §4、https://docs.magireco.top/contributing/server/discipline
 # 人类贡献者看这条；AI Agent 侧由 .claude/hooks/doc-binding-check.sh 提醒。
 # ─────────────────────────────────────────────────────────────────────────
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
     paths:
       - 'cmd/**'
       - 'internal/**'
-      - 'docs/**'
 
 permissions:
   contents: read
@@ -41,12 +45,18 @@ jobs:
 
       - name: 比对改动范围
         id: scan
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           base='${{ github.event.pull_request.base.sha }}'
           head='${{ github.event.pull_request.head.sha }}'
 
           changed=$(git diff --name-only "$base" "$head" || true)
-          docs=$(printf '%s\n' "$changed" | grep -E '^docs/' || true)
+          # 合规 = PR 描述里声明了文档改动（文档:/Docs: 行、文档仓库链接，
+          # 或 skip-doc-check）。文档已不在本仓库，无法再用「改没改 docs/」判定。
+          docs=$(printf '%s' "$PR_BODY" \
+            | grep -oiE '(^|[[:space:]])(文档|Docs)[:：]|magireco-cnv-docs|docs\.magireco\.top|skip-doc-check' \
+            | head -1 || true)
 
           # (A) 客户端可见契约代码（修改级）
           contract=$(printf '%s\n' "$changed" | grep -E '^internal/api/(client|account)/' || true)
@@ -74,7 +84,7 @@ jobs:
               fi
               echo "__EOF__"
             } >> "$GITHUB_OUTPUT"
-            echo "::warning::改动可能让文档描述失真但未更新 docs/，详见 PR 评论"
+            echo "::warning::改动可能让文档描述失真但 PR 描述未说明文档改动，详见 PR 评论"
           else
             echo "compliant=true" >> "$GITHUB_OUTPUT"
           fi
@@ -101,17 +111,24 @@ jobs:
                   marker,
                   '### 📎 文档绑定提醒',
                   '',
-                  '本 PR 的改动可能让文档描述与代码对不上，但没有在同一 PR 内更新 `docs/`：',
+                  '本 PR 的改动可能让文档描述与代码对不上，但 PR 描述里没有说明对应的文档改动：',
                   '',
                   reasons.trim(),
                   '',
-                  `按仓库纪律（[契约纪律与文档绑定](${blob}/docs/contributing/discipline.md)、` +
-                  `[\`CLAUDE.md\` §4](${blob}/.claude/CLAUDE.md)）：改 \`/client/*\`、\`/account/*\` 的契约，` +
-                  '或改变服务端代码结构（包/入口/路由/`CNV_*` 配置/CLI 命令/节点角色等），' +
-                  '都要**同步更新对应文档**（接口文档 / codebase-tour / configuration / nodes / architecture）。',
+                  '文档已迁至独立仓库 [magireco-cnv-docs](https://github.com/MagirecoCN-Revival-Project/magireco-cnv-docs)' +
+                  '（线上 https://docs.magireco.top），跨仓库无法在同一 PR 内改完，' +
+                  `所以按仓库纪律（[\`CLAUDE.md\` §4](${blob}/.claude/CLAUDE.md)）改为**在 PR 描述里留痕**。`,
                   '',
-                  '- 若确实改了契约或结构 → 请补上对应 `docs/` 页面。',
-                  '- 若纯属内部实现、不影响任何文档描述 → 忽略本提醒即可（**本检查不拦截合并**）。',
+                  '请在 PR 描述里加一行，例如：',
+                  '',
+                  '```',
+                  '文档: 已更新 protocol/client-server.md（magireco-cnv-docs#12）',
+                  '文档: 纯内部重构，不影响任何文档描述',
+                  '```',
+                  '',
+                  '- 改了 `/client/*`、`/account/*` 契约，或改变了服务端代码结构' +
+                  '（包/入口/路由/`CNV_*` 配置/CLI 命令/节点角色等）→ 请到文档仓库补上对应页面并在此注明。',
+                  '- 纯属内部实现、不影响任何文档描述 → 写明即可，或忽略本提醒（**本检查不拦截合并**）。',
                 ].join('\n');
                 if (existing) {
                   await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
@@ -123,7 +140,7 @@ jobs:
                   marker,
                   '### 📎 文档绑定提醒',
                   '',
-                  '✅ 已在本 PR 内同步更新 `docs/`（或不再涉及契约 / 结构改动），提醒解除。',
+                  '✅ PR 描述里已说明文档改动（或不再涉及契约 / 结构改动），提醒解除。',
                 ].join('\n');
                 await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
               }

@@ -46,7 +46,6 @@ on:
     # （pages.yml 仍会照常部署文档站,不受影响。）
     paths-ignore:
       - '**.md'
-      - 'docs/**'
       - '.github/**'
       - '.claude/**'
       - 'LICENSE'

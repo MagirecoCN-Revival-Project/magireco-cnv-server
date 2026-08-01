@@ -79,8 +79,10 @@
 🚧 **保留 = 明令未定，禁止自行发挥**；遇到它挡路时，去把那一项定掉，
 不要在实现里"先随便定一个"。
 
-本仓库自己的文档站（`docs/`，VitePress）是**派生物**，不是真理来源；
-但它必须与实现保持一致——见下方「代码 → 文档对照表」。
+本仓库**不再自带文档站**。原先的 `docs/`（VitePress）是统一文档站建立**之前**
+分叉出去的快照，长期无人同步，已删除；内容并入
+[magireco-cnv-docs](https://github.com/MagirecoCN-Revival-Project/magireco-cnv-docs)
+（线上 <https://docs.magireco.top>）。
 
 契约中已定且**极易实现错**的两处，务必留意：
 
@@ -89,42 +91,37 @@
 2. **资产未命中必须返回 404**，不要返回 `200` + 错误页——客户端会把它当作资产内容
    缓存下来。
 
-## 🔴 铁律五：代码与文档同步提交
+## 🔴 铁律五：代码改动必须交代文档
 
-**任何改变协议、行为、部署或安全机制的改动，必须在同一个 commit 里更新对应文档。**
-不允许"先合代码、文档以后补"——滞后的文档会误导读者，比没有文档更糟。
+**文档不在本仓库**，已迁至独立仓库 `magireco-cnv-docs`，线上 <https://docs.magireco.top>。
 
-判据：**如果你的改动会让某篇现有文档的描述变得不准确或不完整，就必须在本次改动里
-把那篇文档一起改掉。**
+原文要求"必须在同一个 commit 里更新对应文档"——跨仓库无法原子提交，那条要求
+**在物理上不可能满足**。留着它只会让每个提交都违规，规则很快没人当回事。改为：
+
+**任何改变协议、行为、部署或安全机制的改动，必须在提交信息里写明对应的文档改动。**
+
+```
+文档: 已更新 protocol/api-server.md（magireco-cnv-docs#12）
+文档: 纯内部重构，不影响任何文档描述
+```
+
+写"不影响"也算合规——**关键是你想过这件事并留下了判断**，而不是默认跳过。
 
 ### 代码 → 文档对照表
 
+表中路径是**文档仓库 magireco-cnv-docs 内**的路径。
+
 | 改了哪里（代码） | 必须同步检查/更新的文档 |
 |---|---|
-| `internal/api/client`（`/client/*` 线格式、端点增删） | `docs/architecture/client-protocol.md`、**以及协议文档仓库** |
-| 协议版本协商 / `supportedProtocolVersions` | `docs/security/version-gates.md` |
-| 请求中间件链、鉴权顺序 | `docs/architecture/request-lifecycle.md` |
-| `internal/directory`（签名节点目录） | `docs/architecture/multi-node.md`、协议文档仓库 `spec/03` |
-| `internal/store`（表结构、迁移、方言） | `docs/architecture/data-model.md`、`docs/contributing/store-dialects.md` |
-| `internal/auth`、`internal/middleware`（会话/限流/代理信任） | `docs/security/*` 对应篇 |
-| `internal/capworker`（PoW） | `docs/security/captcha-pow.md` |
-| `internal/scheduler`、`internal/packer` | `docs/contributing/scheduler.md`、`packer.md` |
-| `internal/api/admin`、`web/pages/*` | `docs/self-host/admin-panel.md` |
-| 环境变量、`deploy/` | `docs/self-host/configuration.md`、`operations.md` |
-| `.github/workflows/` | `docs/contributing/release-ci.md`、下方「CI 触发规则」 |
-| 新增包 / 职责变化 | `docs/architecture/index.md`、`docs/contributing/codebase-tour.md` |
-
-改完文档用 `cd docs && npm run docs:build` 验证能构建（容器 `:::` 要配对、
-内部链接锚点要对）。
-
-> **自动兜底**：提交钩子 `.claude/hooks/doc-sync-check.py`（`PreToolUse`）会在
-> `git commit` 前拦下「改了代码却没改文档」的提交。确需跳过（纯重构 / 修 typo 等）
-> 时，在提交信息里加标记 `[skip-doc-check]`。
-> **只有这一道**——CI 侧的 `doc-binding.yml` 因只在 PR 上触发而实际不生效，
-> 见下方「CI 触发规则」。
-
-> **删能力时不要只删文档段落**：写明"已移除"及其替代。读者手上很可能是旧版本，
-> 需要知道东西去哪了。
+| `internal/api/client`（`/client/*` 线格式、端点增删） | [`/protocol/api-server`](https://docs.magireco.top/protocol/api-server) |
+| 协议版本协商 / `supportedProtocolVersions` | [`/protocol/api-server`](https://docs.magireco.top/protocol/api-server)、[`/security/version-gates`](https://docs.magireco.top/security/version-gates) |
+| 请求中间件链、鉴权顺序 | [`/server/request-lifecycle`](https://docs.magireco.top/server/request-lifecycle) |
+| `internal/directory`（签名节点目录） | [`/server/multi-node`](https://docs.magireco.top/server/multi-node) |
+| `internal/pki`（节点证书链） | [`/security/node-pki`](https://docs.magireco.top/security/node-pki) |
+| `internal/store`（表结构、迁移、方言） | [`/server/data-model`](https://docs.magireco.top/server/data-model)、[`/contributing/server/store-dialects`](https://docs.magireco.top/contributing/server/store-dialects) |
+| `internal/auth`、`internal/middleware` | [`/security/*`](https://docs.magireco.top/security/) 对应篇 |
+| `internal/capworker`（PoW） | [`/security/captcha-pow`](https://docs.magireco.top/security/captcha-pow) |
+| 配置项 `CNV_*` | [`/deploy/configuration`](https://docs.magireco.top/deploy/configuration) |
 
 ## 外部仓库访问边界
 
