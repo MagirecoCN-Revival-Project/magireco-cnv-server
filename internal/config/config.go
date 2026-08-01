@@ -87,6 +87,23 @@ type Config struct {
 	// 配了它就等于承认另有一方也能造出会话身份,要清楚自己在做什么。
 	ClientTokenTrusted map[string]string
 
+	// 节点 PKI(internal/pki)。身份来自离线根签发的证书链;进程启动时自检,
+	// 不通过就拒绝启动——PKI 配错的症状几乎总是延迟且指错方向的。
+	//
+	// PKIAnchors 钉住的根证书文件,逗号分隔(CNV_PKI_ANCHORS)。
+	// **可以配多把**:根轮换的重叠期要同时信任现用与下一把,只配一把的话
+	// 轮换那天所有旧链一起失效。
+	PKIAnchors []string
+	// PKICertFile 本节点证书(CNV_PKI_CERT)。本服务端在信任树里是 role=api 的
+	// 子 CA,与资源分发服务端**平级**——击穿其中一个签不出另一个的身份。
+	PKICertFile string
+	// PKIChainFiles 中间证书,自底向上,不含根(CNV_PKI_CHAIN)。
+	// 由根直签的子 CA 留空。
+	PKIChainFiles []string
+	// PKIKeyFile 本节点身份私钥种子(CNV_PKI_KEY,默认 ./data/pki.key)。
+	// 由 `node emit-csr` 生成,**绝不外传**。
+	PKIKeyFile string
+
 	// 节点新架构
 	NodeRole      string // CNV_NODE_ROLE: business(default) | edge
 	NodeID        string // CNV_NODE_ID, 默认 hostname
@@ -149,6 +166,10 @@ func LoadFromEnv() (*Config, error) {
 		ClientTokenIssuer:   os.Getenv("CNV_CLIENT_TOKEN_ISSUER"),
 		ClientTokenSeed:     os.Getenv("CNV_CLIENT_TOKEN_SEED"),
 		ClientTokenTrusted:  splitKeyPairs(os.Getenv("CNV_CLIENT_TOKEN_TRUSTED_KEYS")),
+		PKIAnchors:          splitPaths(os.Getenv("CNV_PKI_ANCHORS")),
+		PKICertFile:         os.Getenv("CNV_PKI_CERT"),
+		PKIChainFiles:       splitPaths(os.Getenv("CNV_PKI_CHAIN")),
+		PKIKeyFile:          envOr("CNV_PKI_KEY", "./data/pki.key"),
 		NodeRole:            envOr("CNV_NODE_ROLE", "business"),
 		NodeID:              envOr("CNV_NODE_ID", hostname()),
 		NodeKeyFile:         envOr("CNV_NODE_KEY_FILE", "./data/node.key"),
@@ -251,6 +272,16 @@ func splitCSV(s string) []string {
 	for _, p := range parts {
 		if p = strings.TrimSpace(p); p != "" {
 			out = append(out, strings.ToLower(p))
+		}
+	}
+	return out
+}
+
+func splitPaths(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
 		}
 	}
 	return out

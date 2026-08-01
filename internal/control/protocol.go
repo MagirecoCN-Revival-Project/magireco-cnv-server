@@ -32,10 +32,29 @@ const (
 const (
 	ActionInfo       = "info"        // 返回节点基础信息
 	ActionRestart    = "restart"     // 请求节点重启
-	ActionRepack     = "repack"      // 触发离线整包打包
-	ActionResync     = "resync"      // 触发资源同步
 	ActionRotateKey  = "rotate_key"  // 轮换连接密钥
 	ActionPurgeCache = "purge_cache" // 清理缓存
+
+	// repack / resync 已随资源分发面一并移除:它们触发的是打包与资源同步,
+	// 属于资源分发服务端。留着一个没有任何实现接收的 action 名字,只会让运维
+	// 以为这里能发得动。
+
+	// 节点 PKI(internal/pki)。上级(面板)通过管控通道驱动:
+	//
+	//   ActionCertCSR     → 节点返回一份用当前身份密钥自签的 CSR
+	//   ActionCertInstall → 上级把签好的链送回,节点校验后原子换证
+	//   ActionCertRevoke  → 推送一条吊销记录,节点即刻停止信任对应证书
+	//
+	// 续期拆成"要 CSR"与"装证书"两步而不是一次往返:两步各自独立可用
+	// (手工送证书也走 install),而且节点私钥全程不出本机。
+	//
+	// **这里没有 cert_sign。** 本服务端在信任树里是 role=api 的子 CA,而
+	// allowedChildRoles[api] 是空集——它签不出任何下级,这是设计而非疏漏:
+	// 击穿 API 面不该等于能凭空造出一台资源分发节点。
+	ActionCertCSR     = "cert_csr"     // 取本节点的续期 CSR
+	ActionCertInstall = "cert_install" // 安装上级签好的证书链
+	ActionCertRevoke  = "cert_revoke"  // 推送吊销记录(紧急踢出)
+	ActionCertStatus  = "cert_status"  // 查看本节点证书与当前吊销集
 )
 
 // Envelope 是所有帧的 JSON 线格式。按 Type 取用不同字段，未用字段省略。

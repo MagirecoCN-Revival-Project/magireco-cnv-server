@@ -46,6 +46,7 @@ import (
 	"magirecocn-revival/api-server/internal/directory"
 	"magirecocn-revival/api-server/internal/email"
 	"magirecocn-revival/api-server/internal/middleware"
+	"magirecocn-revival/api-server/internal/pki"
 	"magirecocn-revival/api-server/internal/scheduler"
 	"magirecocn-revival/api-server/internal/store"
 	"magirecocn-revival/api-server/internal/totentanz"
@@ -141,6 +142,12 @@ func main() {
 			"nodes", len(dir.Nodes), "expires_at", dir.ExpiresAt)
 	}
 
+	// 节点 PKI 身份(可选)。配了就必须能通过全套自检——PKI 配错的症状几乎总是
+	// 延迟且指错方向的,尤其角色配反可能长期无症状,只是安静地让一台本该只发资源
+	// 的机器收下了凭证类请求。所以查不过一律拒绝启动。
+	pkiIdentity := loadPKIIdentity(cfg, log)
+	pkiRenewer, pkiRevocations := setupPKIRuntime(pkiIdentity, cfg, log)
+
 	// 运行指标采集:管控通道周期推送与只读状态页共用同一份快照逻辑。
 	tel := telemetryFn(cfg.NodeRole)
 
@@ -149,7 +156,7 @@ func main() {
 	ctrlSrv := &control.Server{
 		Key:               nodeKey,
 		Node:              nodeInfo,
-		Commands:          buildCommands(cancel),
+		Commands:          buildCommands(cancel, pkiRenewer, pkiRevocations, log),
 		Telemetry:         tel,
 		TelemetryInterval: 5 * time.Second,
 		Log:               log,
@@ -194,8 +201,13 @@ func telemetryFn(role string) func() control.Telemetry {
 }
 
 // buildCommands 返回管控协议支持的指令集。
-func buildCommands(cancelProcess context.CancelFunc) map[string]control.CommandFunc {
-	return map[string]control.CommandFunc{
+func buildCommands(
+	cancelProcess context.CancelFunc,
+	renewer *pki.Renewer,
+	revocations *pki.Revocations,
+	log *slog.Logger,
+) map[string]control.CommandFunc {
+	cmds := map[string]control.CommandFunc{
 		control.ActionInfo: func(_ context.Context, _ json.RawMessage) (any, error) {
 			return map[string]string{
 				"version": version,
@@ -214,6 +226,10 @@ func buildCommands(cancelProcess context.CancelFunc) map[string]control.CommandF
 			return map[string]string{"status": "gc_triggered"}, nil
 		},
 	}
+	for name, fn := range certCommands(renewer, revocations, log) {
+		cmds[name] = fn
+	}
+	return cmds
 }
 
 func runBusiness(ctx context.Context, cfg *config.Config, dirJSON json.RawMessage, tel func() control.Telemetry, log *slog.Logger) {
@@ -448,6 +464,73 @@ func startHTTP(ctx context.Context, cfg *config.Config, r http.Handler, log *slo
 		log.Error("HTTP 服务异常退出", "err", serveErr)
 		os.Exit(1)
 	}
+}
+
+// loadPKIIdentity 加载并自检本节点的 PKI 身份。
+//
+// 未配置时返回 nil 且不报错:PKI 目前是可选的。**但一旦配了就必须完全正确**——
+// 半配状态(比如配了证书没配根)是最危险的,它看起来像是启用了,实际什么也没验。
+// 所以只区分"完全没配"与"配了且必须全对"两种。
+func loadPKIIdentity(cfg *config.Config, log *slog.Logger) *pki.Identity {
+	if cfg.PKICertFile == "" && len(cfg.PKIAnchors) == 0 {
+		return nil
+	}
+	// 本服务端在信任树里只有一种身份:role=api 的子 CA。
+	// 与 CNV_NODE_ROLE 无关——那个词回答"这进程跑什么服务",
+	// 而这里回答"在信任树里是哪类主体",两者不是同一个问题。
+	id, err := pki.Load(pki.LoadOptions{
+		CertFile:    cfg.PKICertFile,
+		ChainFiles:  cfg.PKIChainFiles,
+		KeyFile:     cfg.PKIKeyFile,
+		AnchorFiles: cfg.PKIAnchors,
+		WantRole:    pki.RoleAPI,
+	})
+	if err != nil {
+		log.Error("节点 PKI 身份自检未通过,拒绝启动", "err", err,
+			"cert", cfg.PKICertFile, "want_role", pki.RoleAPI)
+		os.Exit(2)
+	}
+	log.Info("节点 PKI 身份已加载", "identity", id.Describe())
+	// 证书已过半生命周期:该续期了。这里只告警——续期本身是另一条路径,
+	// 而且证书此刻仍然有效,不该因此拒绝启动。
+	if id.NeedsRenewal(time.Now()) {
+		log.Warn("本节点证书已过半生命周期,应尽快续期",
+			"subject", id.Leaf().Sub,
+			"renew_at", id.Leaf().RenewAt().Format(time.RFC3339),
+			"expires_at", time.UnixMilli(id.Leaf().Exp).Format(time.RFC3339))
+	}
+	return id
+}
+
+// setupPKIRuntime 在已加载的身份之上装配换证器与吊销集。
+//
+// 吊销集直接挂进 Verifier:此后**每一次链校验**都会先过一遍吊销判定,
+// 包括互鉴对端。挂在别处的话总会漏掉某条校验路径,而漏掉的那条恰恰是
+// 紧急吊销最需要覆盖的。
+func setupPKIRuntime(id *pki.Identity, cfg *config.Config, log *slog.Logger) (*pki.Renewer, *pki.Revocations) {
+	if id == nil {
+		return nil, nil
+	}
+	revocations := pki.NewRevocations()
+	id.Verifier.Revoked = revocations.Hook()
+
+	renewer, err := pki.NewRenewer(id, pki.RenewConfig{
+		CertFile:    cfg.PKICertFile,
+		ChainFiles:  cfg.PKIChainFiles,
+		KeyFile:     cfg.PKIKeyFile,
+		AnchorFiles: cfg.PKIAnchors,
+		// 换证由上级经管控通道驱动(cert_csr → cert_install),节点不主动外拨。
+		// 这里给一个明确报错的占位,免得哪天有人调 RenewOnce 却静默什么也没发生。
+		Request: func(context.Context, string) ([]string, error) {
+			return nil, errors.New("换证由上级经管控通道驱动,节点侧不主动请求")
+		},
+		Log: log,
+	})
+	if err != nil {
+		log.Error("初始化证书换证器失败", "err", err)
+		os.Exit(2)
+	}
+	return renewer, revocations
 }
 
 // setupClientToken 装配客户端会话令牌的签发方与校验方。
