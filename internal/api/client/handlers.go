@@ -28,6 +28,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -39,6 +40,7 @@ import (
 	"magirecocn-revival/api-server/internal/api/respond"
 	"magirecocn-revival/api-server/internal/auth"
 	"magirecocn-revival/api-server/internal/autoban"
+	"magirecocn-revival/api-server/internal/clienttoken"
 	"magirecocn-revival/api-server/internal/middleware"
 	"magirecocn-revival/api-server/internal/store"
 	"magirecocn-revival/api-server/internal/totentanz"
@@ -69,6 +71,16 @@ type Handler struct {
 	// 的 "directory" 字段。nil = 不下发(客户端沿用上次缓存或内置列表)。
 	// 节点从 CNV_DIRECTORY_FILE 加载并注入。
 	DirectoryJSON json.RawMessage
+
+	// TokenIssuer 签发自包含的 access_token(见 internal/clienttoken)。
+	//
+	// 本服务端是**账号与身份的源头**:它签出的令牌会被资源分发服务端凭公钥直接
+	// 采信,那边不查库、也不需要跟这里共用一个数据库。所以这把签名私钥的价值
+	// 等同于"能凭空造出任意用户的会话",绝不可外泄(§5)。
+	TokenIssuer *clienttoken.Issuer
+	// TokenVerifier 校验自包含令牌。始终信任本节点自己的公钥;
+	// CNV_CLIENT_TOKEN_TRUSTED_KEYS 可再叠加外部签发方。
+	TokenVerifier *clienttoken.Verifier
 
 	// BootstrapEndpoint 是 /magica/api/snaa 下发给 Android 底包的业务服务器地址。
 	// 空串 = 本节点不接管 Android 底包,该端点返回 503。
@@ -188,9 +200,13 @@ func (h *Handler) init(w http.ResponseWriter, r *http.Request) {
 	// 它下发的是 APK 安装包地址,浏览器自行更新,Web 端无此概念。
 	// 版本相关的唯一机制是上面的**协议版本协商**。
 
-	// 签发 client_sessions:access_token = 32 字节 hex
-	accessToken, err := auth.NewToken()
-	if err != nil {
+	// 签发会话:自包含令牌 "cnv1.<载荷>.<签名>"。校验只需公钥,不必与签发方共库——
+	// 这正是资源分发服务端能在不连本服务端、不共享数据库的前提下认得这个身份的原因。
+	//
+	// 照旧写一行 client_sessions:管理后台要按设备列会话,撤销也要有落点。
+	if h.TokenIssuer == nil {
+		// 失败关闭。签发方在 cmd/node 启动时必定构造成功(种子没配会自动生成),
+		// 走到这里说明装配漏了——宁可 500 也不能签出无签名的凭证。
 		respond.Fail(w, http.StatusInternalServerError, "internal_error", "")
 		return
 	}
@@ -198,9 +214,29 @@ func (h *Handler) init(w http.ResponseWriter, r *http.Request) {
 	if ttl <= 0 {
 		ttl = 7 * 24 * time.Hour
 	}
-	now := time.Now().UnixMilli()
+	issuedAt := time.Now()
+	now := issuedAt.UnixMilli()
+
+	// sessionKey 是 client_sessions 的主键,存的是令牌里的 jti 而**不是令牌本身**:
+	// 自包含令牌约 400 字节,而该列在 MySQL 迁移里是 VARCHAR(128) 塞不下;
+	// jti 是 64 个十六进制字符,天然合身,且撤销本来就该按 jti 匹配。
+	sessionKey, err := auth.NewToken()
+	if err != nil {
+		respond.Fail(w, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	accessToken, err := h.TokenIssuer.Issue(clienttoken.Claims{
+		Sub: req.DeviceID,
+		Sig: req.Signature,
+		CV:  req.Version,
+		Ch:  req.Channel,
+	}, issuedAt, ttl, sessionKey)
+	if err != nil {
+		respond.Fail(w, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
 	if err := h.St.ClientSessionInsert(ctx, store.ClientSession{
-		AccessToken:   accessToken,
+		AccessToken:   sessionKey,
 		DeviceID:      req.DeviceID,
 		Signature:     req.Signature,
 		ClientVersion: req.Version,
@@ -346,12 +382,7 @@ func (h *Handler) requireClientSession(next http.Handler) http.Handler {
 		if tri.Signature == "" {
 			tri.Signature = r.Header.Get("X-Signature")
 		}
-		if !auth.IsWellFormedToken(tri.AccessToken) {
-			respond.Fail(w, http.StatusUnauthorized, "missing_access_token",
-				"缺少或非法的 access_token,请先调用 /client/init")
-			return
-		}
-		sess, err := h.St.ClientSessionLookup(r.Context(), tri.AccessToken, tri.DeviceID)
+		sess, sessionKey, err := h.resolveSession(r.Context(), tri.AccessToken, tri.DeviceID)
 		if err != nil {
 			respond.Fail(w, http.StatusUnauthorized, "session_invalid",
 				"access_token 失效或与 device_id 不匹配,请重新握手")
@@ -367,7 +398,7 @@ func (h *Handler) requireClientSession(next http.Handler) http.Handler {
 				Version: sess.ClientVersion, Channel: sess.Channel}
 			h.recordIntegrityViolation(r.Context(), "signature",
 				"changed_mid_session", req, middleware.ClientIP(r))
-			_ = h.St.ClientSessionDelete(r.Context(), tri.AccessToken)
+			_ = h.St.ClientSessionDelete(r.Context(), sessionKey)
 			respond.Fail(w, http.StatusForbidden, "signature_rejected",
 				"客户端签名异常,会话已作废,请重新握手")
 			return
@@ -380,11 +411,56 @@ func (h *Handler) requireClientSession(next http.Handler) http.Handler {
 			respond.OKRaw(w, out)
 			return
 		}
-		h.St.ClientSessionTouch(r.Context(), tri.AccessToken)
+		h.St.ClientSessionTouch(r.Context(), sessionKey)
 		ctx := context.WithValue(r.Context(), ctxClientSession, sess)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
+
+// resolveSession 把 access_token 解析成会话。
+// 返回的第二个值是 client_sessions 的主键,调用方拿它做 Touch / Delete。
+//
+// 只接受自包含令牌("cnv1." 前缀 + Ed25519 签名)。这里**没有**任何降级分支:
+// 令牌解析或验签失败就是失败,不会退回别的校验方式。旧的 64 位 hex 令牌 + 查库
+// 校验已随 Android 专有 API 一并废弃——公开发行的是上一代产物,这一代因依赖上游
+// 未上线,装机量为零,兼容层保护不到任何人,却给伪造令牌留了一条降级入口。
+func (h *Handler) resolveSession(ctx context.Context, token, deviceID string) (*store.ClientSession, string, error) {
+	if !clienttoken.Looks(token) {
+		return nil, "", errNoSession
+	}
+	if h.TokenVerifier == nil {
+		return nil, "", errNoSession
+	}
+	c, err := h.TokenVerifier.VerifyForDevice(token, deviceID, time.Now())
+	if err != nil {
+		return nil, "", err
+	}
+	// 撤销:本节点自己签发的令牌,client_sessions 里必须还有对应的行——
+	// 管理后台"踢下线"删的就是那一行,删掉即视为已撤销。
+	//
+	// 外部签发方(若配置了)签的令牌本地不会有行,那时"查不到"必须视为有效,
+	// 否则一开启联邦就会把所有远端令牌全拒掉。这就是撤销判定必须知道签发方的原因。
+	if h.TokenIssuer != nil && c.Iss == h.TokenIssuer.ID() {
+		sess, lookupErr := h.St.ClientSessionLookup(ctx, c.JTI, deviceID)
+		if lookupErr != nil {
+			return nil, "", lookupErr
+		}
+		return sess, c.JTI, nil
+	}
+	// 远端签发:会话元数据全部来自已验签的载荷,不落库。
+	return &store.ClientSession{
+		AccessToken:   c.JTI,
+		DeviceID:      c.Sub,
+		Signature:     c.Sig,
+		ClientVersion: c.CV,
+		Channel:       c.Ch,
+		CreatedAt:     c.Iat,
+		ExpiresAt:     c.Exp,
+		LastSeenAt:    c.Iat,
+	}, c.JTI, nil
+}
+
+var errNoSession = errors.New("client: 缺少或非法的 access_token")
 
 func sessionFromCtx(ctx context.Context) *store.ClientSession {
 	v, _ := ctx.Value(ctxClientSession).(*store.ClientSession)

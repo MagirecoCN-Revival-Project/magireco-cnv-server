@@ -71,6 +71,22 @@ type Config struct {
 	AdminSessionTTL     time.Duration // 管理员会话有效期
 	AccountSessionTTL   time.Duration // 玩家会话有效期
 
+	// 客户端会话令牌(internal/clienttoken)。令牌自包含并由 Ed25519 签名,
+	// 校验方只需公钥,不必与签发方共库——资源分发服务端因此能在不连本服务端、
+	// 不共享数据库的前提下认得这里签出的身份。
+	//
+	// ClientTokenIssuer 本节点签发令牌时写进 iss 的标识(CNV_CLIENT_TOKEN_ISSUER),
+	// 空则回退到 NodeID。校验方按 iss 挑公钥,所以同一部署内必须稳定唯一。
+	ClientTokenIssuer string
+	// ClientTokenSeed 签名私钥种子,32 字节十六进制(CNV_CLIENT_TOKEN_SEED)。
+	// 留空则首次启动自动生成并持久化到 config 表,与 resource_token_secret 同款做法。
+	// 这把钥匙**必须在线**,与离线的目录私钥是两把不同的钥匙,不可复用。
+	ClientTokenSeed string
+	// ClientTokenTrusted 额外信任的签发方公钥,格式 "标识:公钥hex,标识:公钥hex"
+	// (CNV_CLIENT_TOKEN_TRUSTED_KEYS)。本服务端是身份源头,通常留空;
+	// 配了它就等于承认另有一方也能造出会话身份,要清楚自己在做什么。
+	ClientTokenTrusted map[string]string
+
 	// 节点新架构
 	NodeRole      string // CNV_NODE_ROLE: business(default) | edge
 	NodeID        string // CNV_NODE_ID, 默认 hostname
@@ -130,6 +146,9 @@ func LoadFromEnv() (*Config, error) {
 		ClientSessionTTL:    durOr("CNV_CLIENT_SESSION_TTL", 7*24*time.Hour),
 		AdminSessionTTL:     durOr("CNV_ADMIN_SESSION_TTL", 7*24*time.Hour),
 		AccountSessionTTL:   durOr("CNV_ACCOUNT_SESSION_TTL", 30*24*time.Hour),
+		ClientTokenIssuer:   os.Getenv("CNV_CLIENT_TOKEN_ISSUER"),
+		ClientTokenSeed:     os.Getenv("CNV_CLIENT_TOKEN_SEED"),
+		ClientTokenTrusted:  splitKeyPairs(os.Getenv("CNV_CLIENT_TOKEN_TRUSTED_KEYS")),
 		NodeRole:            envOr("CNV_NODE_ROLE", "business"),
 		NodeID:              envOr("CNV_NODE_ID", hostname()),
 		NodeKeyFile:         envOr("CNV_NODE_KEY_FILE", "./data/node.key"),
@@ -233,6 +252,35 @@ func splitCSV(s string) []string {
 		if p = strings.TrimSpace(p); p != "" {
 			out = append(out, strings.ToLower(p))
 		}
+	}
+	return out
+}
+
+// splitKeyPairs 解析 "标识:值,标识:值" 形式的环境变量。
+//
+// 注意这里**不能**复用 splitCSV:那个函数会把每一项 strings.ToLower。签发方标识
+// 是大小写敏感的,小写化之后按 iss 挑公钥会挑不到,而症状是"签名校验失败"这种
+// 完全指错方向的错。
+func splitKeyPairs(s string) map[string]string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	out := map[string]string{}
+	for _, item := range strings.Split(s, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		// 只按第一个冒号切:值是十六进制不含冒号,但标识里出现冒号时
+		// 按最后一个切会把标识截断,这里取更不容易出错的一侧。
+		i := strings.Index(item, ":")
+		if i <= 0 || i == len(item)-1 {
+			continue
+		}
+		out[strings.TrimSpace(item[:i])] = strings.TrimSpace(item[i+1:])
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

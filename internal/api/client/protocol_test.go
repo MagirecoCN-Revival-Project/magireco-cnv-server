@@ -24,6 +24,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"magirecocn-revival/api-server/internal/clienttoken"
 	"magirecocn-revival/api-server/internal/store"
 )
 
@@ -40,8 +41,21 @@ func newTestHandler(t *testing.T) (*Handler, *store.Store) {
 	}
 	t.Cleanup(func() { st.Close() })
 
+	// 会话令牌签发方/校验方是必配项:本服务端只接受自包含签名令牌,
+	// 不配的话 /client/init 会直接 500(失败关闭),整套协议测试都跑不起来。
+	iss, err := clienttoken.NewIssuer("test-node", localSeed)
+	if err != nil {
+		t.Fatalf("NewIssuer: %v", err)
+	}
+	ver, err := clienttoken.NewVerifier(map[string]string{iss.ID(): iss.PublicKeyHex()})
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+
 	return &Handler{
 		St:                  st,
+		TokenIssuer:         iss,
+		TokenVerifier:       ver,
 		ResourceTokenSecret: []byte("test-secret-32-bytes-12345678"),
 		SignatureAllowed:    nil, // 空白名单 = 放行
 		TokenWindowSec:      300,

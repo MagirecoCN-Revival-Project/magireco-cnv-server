@@ -11,10 +11,12 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -22,6 +24,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -37,6 +40,7 @@ import (
 	"magirecocn-revival/api-server/internal/api/user"
 	"magirecocn-revival/api-server/internal/autoban"
 	"magirecocn-revival/api-server/internal/capworker"
+	"magirecocn-revival/api-server/internal/clienttoken"
 	"magirecocn-revival/api-server/internal/config"
 	"magirecocn-revival/api-server/internal/control"
 	"magirecocn-revival/api-server/internal/directory"
@@ -280,8 +284,18 @@ func runBusiness(ctx context.Context, cfg *config.Config, dirJSON json.RawMessag
 			"refresh_sec", cfg.TotentanzRefreshSec)
 	}
 
+	// 客户端会话令牌的签发/校验。装配失败一律拒绝启动:没有它 /client/init
+	// 会 500,一个签不出会话的服务端跑起来也没有意义,不如在启动时就说清楚。
+	tokenIssuer, tokenVerifier, err := setupClientToken(ctx, cfg, st, log)
+	if err != nil {
+		log.Error("客户端会话令牌初始化失败", "err", err)
+		os.Exit(2)
+	}
+
 	clientH := &client.Handler{
 		Discovery:           disc,
+		TokenIssuer:         tokenIssuer,
+		TokenVerifier:       tokenVerifier,
 		St:                  st,
 		ResourceTokenSecret: signKey,
 		SignatureAllowed:    cfg.SignatureAllowed,
@@ -434,6 +448,94 @@ func startHTTP(ctx context.Context, cfg *config.Config, r http.Handler, log *slo
 		log.Error("HTTP 服务异常退出", "err", serveErr)
 		os.Exit(1)
 	}
+}
+
+// setupClientToken 装配客户端会话令牌的签发方与校验方。
+//
+// 种子没配就自动生成并持久化到 config 表(与 resource_token_secret 同款做法)——
+// 既有部署升级上来不需要改任何配置,也不会因为忘配密钥而静默退回不带签名的旧模式。
+//
+// 校验方**始终信任本节点自己的公钥**。本服务端是身份源头,通常不需要再叠加外部
+// 签发方;真要配也留了口子,但那等于承认另有一方也能造出会话身份。
+func setupClientToken(ctx context.Context, cfg *config.Config, st *store.Store, log *slog.Logger) (*clienttoken.Issuer, *clienttoken.Verifier, error) {
+	issuerID := cfg.ClientTokenIssuer
+	if issuerID == "" {
+		issuerID = cfg.NodeID
+	}
+	if issuerID == "" {
+		issuerID = "cnv-api"
+	}
+
+	seed := strings.TrimSpace(cfg.ClientTokenSeed)
+	if seed == "" {
+		var err error
+		if seed, err = resolveClientTokenSeed(ctx, st, log); err != nil {
+			return nil, nil, err
+		}
+	}
+	issuer, err := clienttoken.NewIssuer(issuerID, seed)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	trusted := map[string]string{issuer.ID(): issuer.PublicKeyHex()}
+	for id, pub := range cfg.ClientTokenTrusted {
+		if id == issuer.ID() {
+			// 外部配的同名公钥会顶掉本节点自己的,之后自己签的令牌全部验签失败。
+			// 这种配置几乎肯定是笔误,直接拒绝启动比上线后再排查便宜得多。
+			return nil, nil, fmt.Errorf("CNV_CLIENT_TOKEN_TRUSTED_KEYS 里的签发方 %q 与本节点标识重名", id)
+		}
+		trusted[id] = pub
+	}
+	verifier, err := clienttoken.NewVerifier(trusted)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(cfg.ClientTokenTrusted) > 0 {
+		ids := make([]string, 0, len(cfg.ClientTokenTrusted))
+		for id := range cfg.ClientTokenTrusted {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		log.Warn("客户端会话令牌:配置了外部签发方,本节点不再是身份的唯一源头",
+			"本节点", issuer.ID(), "额外信任签发方", ids)
+	} else {
+		log.Info("客户端会话令牌:本节点为唯一签发方", "签发方", issuer.ID())
+	}
+	// 这把公钥要分发给资源分发服务端(填进它的 CNV_CLIENT_TOKEN_TRUSTED_KEYS),
+	// 公开无妨;私钥种子绝不进日志。
+	log.Info("客户端会话令牌验证公钥", "issuer", issuer.ID(), "pubkey", issuer.PublicKeyHex())
+	return issuer, verifier, nil
+}
+
+func resolveClientTokenSeed(ctx context.Context, st *store.Store, log *slog.Logger) (string, error) {
+	type wrap struct {
+		Hex string `json:"hex"`
+	}
+	var w wrap
+	ok, err := st.ConfigGet(ctx, "client_token_seed", &w)
+	if err != nil {
+		return "", err
+	}
+	if ok {
+		if b, decErr := hex.DecodeString(w.Hex); decErr == nil && len(b) == ed25519.SeedSize {
+			return w.Hex, nil
+		}
+		// 这里不能"解析失败就重新生成":换种子等于换签名私钥,已签发的令牌会
+		// 全部失效,所有在线设备被踢下线。宁可拒绝启动让人来看一眼。
+		return "", errors.New("config 表里的 client_token_seed 不是 32 字节十六进制;" +
+			"重新生成会让已签发的令牌全部失效,请人工确认后再处理")
+	}
+	b := make([]byte, ed25519.SeedSize)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	w.Hex = hex.EncodeToString(b)
+	if err := st.ConfigSet(ctx, "client_token_seed", w); err != nil {
+		return "", err
+	}
+	log.Info("已自动生成客户端会话令牌签名种子并持久化")
+	return w.Hex, nil
 }
 
 func resolveResourceTokenSecret(ctx context.Context, st *store.Store, log *slog.Logger) ([]byte, error) {
