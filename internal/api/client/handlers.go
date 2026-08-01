@@ -24,9 +24,6 @@ package client
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -42,6 +39,7 @@ import (
 	"magirecocn-revival/api-server/internal/autoban"
 	"magirecocn-revival/api-server/internal/clienttoken"
 	"magirecocn-revival/api-server/internal/middleware"
+	"magirecocn-revival/api-server/internal/resourceauth"
 	"magirecocn-revival/api-server/internal/store"
 	"magirecocn-revival/api-server/internal/totentanz"
 )
@@ -638,32 +636,22 @@ func (h *Handler) sceneManifest(w http.ResponseWriter, r *http.Request) {
 
 // ── 内部辅助 ────────────────────────────────────────────────────────────
 
-// signResourceToken 签发绑设备、按时间窗轮换的资产鉴权令牌(HMAC-SHA256)。
+// signResourceToken 签发绑设备、按时间窗轮换的资产鉴权令牌。
+//
+// 实现在 internal/resourceauth——**那个包在 magirecocn-resource-server 里有一份
+// 完全相同的拷贝**:本服务端签发,资源分发服务端的边缘节点校验。从前两边各写一份
+// HMAC,单位一个用毫秒一个用秒都没人发现,因为当时**根本没有校验方**,资源目录
+// 是裸挂的。现在有了,两边就必须字节级一致,靠跨仓库测试向量钉住。
 //
 // 密钥过短时返回空串,调用方据此**省略 asset_auth**。这是 fail-closed:
 // 空密钥的 HMAC 照样能算出一个"看起来正常"的令牌,而那个令牌任何人都能自己算,
 // 等于把资产完全敞开。宁可不下发让客户端明确拿不到资产,也不下发一个假的凭据。
 // (正常部署下 cmd/node 会在启动时自动生成并持久化密钥,不会走到这一支。)
 func (h *Handler) signResourceToken(deviceID string) (string, int64) {
-	if len(h.ResourceTokenSecret) < 16 {
-		return "", 0
-	}
-	win := h.TokenWindowSec
-	if win <= 0 {
-		win = 300
-	}
-	now := time.Now().Unix()
-	bucket := now / int64(win)
-	// 单位是 **Unix 秒**,与 server_time_at / expire_time / end_time 一致。
-	// 旧实现返回毫秒(沿用 Android 期的 resource_token),协议已统一为秒。
-	expires := (bucket + 1) * int64(win)
-	mac := hmac.New(sha256.New, h.ResourceTokenSecret)
-	mac.Write([]byte(deviceID))
-	mac.Write([]byte("|"))
-	mac.Write([]byte(strconv.FormatInt(bucket, 10)))
-	sig := mac.Sum(nil)
-	tok := base64.RawURLEncoding.EncodeToString(sig)
-	return tok, expires
+	return resourceauth.Signer{
+		Secret:    h.ResourceTokenSecret,
+		WindowSec: h.TokenWindowSec,
+	}.Sign(deviceID, time.Now())
 }
 
 // checkSignature 返回拒绝原因(非空)或空串(通过)。

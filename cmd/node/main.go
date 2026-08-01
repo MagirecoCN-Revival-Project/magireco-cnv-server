@@ -317,7 +317,7 @@ func runBusiness(ctx context.Context, cfg *config.Config, dirJSON json.RawMessag
 		SignatureAllowed:    cfg.SignatureAllowed,
 		ChannelAllowed:      cfg.ChannelAllowed,
 		RequireSignature:    cfg.RequireSignature,
-		TokenWindowSec:      30,
+		TokenWindowSec:      cfg.ResourceTokenWindowSec,
 		ClientSessionTTL:    cfg.ClientSessionTTL,
 		Heartbeats:          hearts,
 		AutoBan:             autoBan,

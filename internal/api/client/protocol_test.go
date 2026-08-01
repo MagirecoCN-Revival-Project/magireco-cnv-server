@@ -25,6 +25,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"magirecocn-revival/api-server/internal/clienttoken"
+	"magirecocn-revival/api-server/internal/resourceauth"
 	"magirecocn-revival/api-server/internal/store"
 )
 
@@ -788,6 +789,20 @@ func TestInit_AssetAuthTokenIsVerifiable(t *testing.T) {
 	want, _ := h.signResourceToken("dev_aa")
 	if tok == "" || tok != want {
 		t.Errorf("asset_auth.token 与 signResourceToken 不一致\n got=%q\nwant=%q", tok, want)
+	}
+
+	// 上面那条只证明"init 下发的就是签发方算出来的",两边一起错也照样通过。
+	// 真正的契约是**边缘节点验得过**——那边只有密钥,没有本进程的任何状态。
+	// 所以照着校验方的样子独立验一次,并核对令牌里带回的设备。
+	dev, err := resourceauth.Verifier{
+		Secret:    h.ResourceTokenSecret,
+		WindowSec: h.TokenWindowSec,
+	}.Verify(tok, time.Now())
+	if err != nil {
+		t.Fatalf("asset_auth.token 在校验方(资源分发服务端边缘节点)验不过: %v", err)
+	}
+	if dev != "dev_aa" {
+		t.Errorf("令牌里的设备 = %q, want dev_aa", dev)
 	}
 }
 

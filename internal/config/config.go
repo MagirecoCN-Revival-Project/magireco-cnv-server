@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"magirecocn-revival/api-server/internal/resourceauth"
 )
 
 // Config 是节点/面板共用的根配置;字段是否必填取决于运行模式。
@@ -53,7 +55,7 @@ type Config struct {
 	BootstrapVersion int
 
 	// 业务节点专用
-	DBURL               string        // postgres://...
+	DBURL string // postgres://...
 	// TotentanzDiscoveryURL 上游 Totentanz 的端点发现接口完整 URL
 	// (CNV_TOTENTANZ_DISCOVERY_URL)。空 = 不启用,services 完全沿用 KV 配置。
 	TotentanzDiscoveryURL string
@@ -64,12 +66,19 @@ type Config struct {
 	// (CNV_TOTENTANZ_REFRESH_SEC),缺省 300。
 	TotentanzRefreshSec int
 
-	ResourceTokenSecret []byte        // CNV_RESOURCE_TOKEN_SECRET, resource_token 的 HMAC 签名根密钥;不设则首次启动自动生成并持久化
-	AdminJWTSecret      []byte        // 管理后台 JWT / cookie 签名(cookie 完整性校验)
-	CapWorkerURL        string        // cap-worker 部署 URL(可空,内置自实现)
-	ClientSessionTTL    time.Duration // 客户端会话有效期
-	AdminSessionTTL     time.Duration // 管理员会话有效期
-	AccountSessionTTL   time.Duration // 玩家会话有效期
+	ResourceTokenSecret []byte // CNV_RESOURCE_TOKEN_SECRET, resource_token 的 HMAC 签名根密钥;不设则首次启动自动生成并持久化
+	// ResourceTokenWindowSec 资产令牌的时间桶长度,秒
+	// (CNV_RESOURCE_TOKEN_WINDOW_SEC,默认 300)。
+	//
+	// **本节点与资源分发服务端(签发方与校验方)必须配成同一个值。** 桶号是
+	// unix秒/窗口 算出来的,两边窗口不一致就会算出不同的桶,结果是每个资产请求
+	// 都 401——而错误信息只会说"令牌签名校验失败",完全指不到这里。
+	ResourceTokenWindowSec int
+	AdminJWTSecret         []byte        // 管理后台 JWT / cookie 签名(cookie 完整性校验)
+	CapWorkerURL           string        // cap-worker 部署 URL(可空,内置自实现)
+	ClientSessionTTL       time.Duration // 客户端会话有效期
+	AdminSessionTTL        time.Duration // 管理员会话有效期
+	AccountSessionTTL      time.Duration // 玩家会话有效期
 
 	// 客户端会话令牌(internal/clienttoken)。令牌自包含并由 Ed25519 签名,
 	// 校验方只需公钥,不必与签发方共库——资源分发服务端因此能在不连本服务端、
@@ -135,57 +144,58 @@ type Config struct {
 // 调用方根据 NodeRole 自行判断需要哪些字段。
 func LoadFromEnv() (*Config, error) {
 	c := &Config{
-		Addr:                envOr("CNV_ADDR", ":8080"),
-		WebDir:              envOr("CNV_WEB_DIR", "./web"),
-		PrimaryResDir:       os.Getenv("CNV_PRIMARY_RES_DIR"),
-		OfflineDir:          envOr("CNV_OFFLINE_DIR", "./data/offline"),
-		OfflineURLPath:      envOr("CNV_OFFLINE_URL_PATH", "/dl/offline-pack"),
-		HotUpdateDir:        envOr("CNV_HOTUPDATE_DIR", "./data/hotupdate"),
-		HotUpdateURLPath:    envOr("CNV_HOTUPDATE_URL_PATH", "/dl/hot-update"),
-		HotUpdateMaxBytes:   int64(intOr("CNV_HOTUPDATE_MAX_MB", 1024)) << 20,
-		BodyLimitMaxBytes:   int64(intOr("CNV_BODY_LIMIT_MB", 8)) << 20,
-		PrimaryResPath:      envOr("CNV_PRIMARY_RES_PATH", "/res"),
-		TrustProxy:          os.Getenv("CNV_TRUST_PROXY"),
+		Addr:                   envOr("CNV_ADDR", ":8080"),
+		WebDir:                 envOr("CNV_WEB_DIR", "./web"),
+		PrimaryResDir:          os.Getenv("CNV_PRIMARY_RES_DIR"),
+		OfflineDir:             envOr("CNV_OFFLINE_DIR", "./data/offline"),
+		OfflineURLPath:         envOr("CNV_OFFLINE_URL_PATH", "/dl/offline-pack"),
+		HotUpdateDir:           envOr("CNV_HOTUPDATE_DIR", "./data/hotupdate"),
+		HotUpdateURLPath:       envOr("CNV_HOTUPDATE_URL_PATH", "/dl/hot-update"),
+		HotUpdateMaxBytes:      int64(intOr("CNV_HOTUPDATE_MAX_MB", 1024)) << 20,
+		BodyLimitMaxBytes:      int64(intOr("CNV_BODY_LIMIT_MB", 8)) << 20,
+		PrimaryResPath:         envOr("CNV_PRIMARY_RES_PATH", "/res"),
+		TrustProxy:             os.Getenv("CNV_TRUST_PROXY"),
 		TotentanzDiscoveryURL:  strings.TrimSpace(os.Getenv("CNV_TOTENTANZ_DISCOVERY_URL")),
 		TotentanzClientVersion: atoiOr(os.Getenv("CNV_TOTENTANZ_CLIENT_VERSION"), 0),
 		TotentanzRefreshSec:    atoiOr(os.Getenv("CNV_TOTENTANZ_REFRESH_SEC"), 300),
-		TLSCert:             os.Getenv("CNV_TLS_CERT"),
-		TLSKey:              os.Getenv("CNV_TLS_KEY"),
-		SignatureAllowed:    splitCSV(os.Getenv("CNV_SIGNATURE_WHITELIST")),
-		ChannelAllowed:      splitCSV(os.Getenv("CNV_CHANNEL_WHITELIST")),
-		RequireSignature:    boolOr("CNV_REQUIRE_SIGNATURE", false),
-		DevMode:             boolOr("CNV_DEV_MODE", false),
-		BootstrapEndpoint:   strings.TrimSpace(os.Getenv("CNV_BOOTSTRAP_ENDPOINT")),
-		BootstrapMaxThreads: intOr("CNV_BOOTSTRAP_MAX_THREADS", 4),
-		BootstrapVersion:    intOr("CNV_BOOTSTRAP_VERSION", 0),
-		DBURL:               os.Getenv("CNV_DB_URL"),
-		CapWorkerURL:        os.Getenv("CNV_CAP_WORKER_URL"),
-		ClientSessionTTL:    durOr("CNV_CLIENT_SESSION_TTL", 7*24*time.Hour),
-		AdminSessionTTL:     durOr("CNV_ADMIN_SESSION_TTL", 7*24*time.Hour),
-		AccountSessionTTL:   durOr("CNV_ACCOUNT_SESSION_TTL", 30*24*time.Hour),
-		ClientTokenIssuer:   os.Getenv("CNV_CLIENT_TOKEN_ISSUER"),
-		ClientTokenSeed:     os.Getenv("CNV_CLIENT_TOKEN_SEED"),
-		ClientTokenTrusted:  splitKeyPairs(os.Getenv("CNV_CLIENT_TOKEN_TRUSTED_KEYS")),
-		PKIAnchors:          splitPaths(os.Getenv("CNV_PKI_ANCHORS")),
-		PKICertFile:         os.Getenv("CNV_PKI_CERT"),
-		PKIChainFiles:       splitPaths(os.Getenv("CNV_PKI_CHAIN")),
-		PKIKeyFile:          envOr("CNV_PKI_KEY", "./data/pki.key"),
-		NodeRole:            envOr("CNV_NODE_ROLE", "business"),
-		NodeID:              envOr("CNV_NODE_ID", hostname()),
-		NodeKeyFile:         envOr("CNV_NODE_KEY_FILE", "./data/node.key"),
-		ControlAddr:         envOr("CNV_CONTROL_ADDR", "127.0.0.1:9090"),
-		DirectoryFile:       os.Getenv("CNV_DIRECTORY_FILE"),
-		PublicURL:           os.Getenv("CNV_PUBLIC_URL"),
-		PanelPublicURL:      strings.TrimRight(os.Getenv("CNV_PANEL_PUBLIC_URL"), "/"),
-		PanelDBFile:         envOr("CNV_PANEL_DB_FILE", "./data/panel.db"),
-		PanelKey:            os.Getenv("CNV_PANEL_KEY"),
-		SkipMigrate:         boolOr("CNV_SKIP_MIGRATE", false),
-		SMTPHost:            os.Getenv("CNV_SMTP_HOST"),
-		SMTPPort:            envOr("CNV_SMTP_PORT", "587"),
-		SMTPUser:            os.Getenv("CNV_SMTP_USER"),
-		SMTPPass:            os.Getenv("CNV_SMTP_PASS"),
-		SMTPFrom:            os.Getenv("CNV_SMTP_FROM"),
-		SMTPFromName:        envOr("CNV_SMTP_FROM_NAME", "魔法纪录复兴计划"),
+		TLSCert:                os.Getenv("CNV_TLS_CERT"),
+		TLSKey:                 os.Getenv("CNV_TLS_KEY"),
+		SignatureAllowed:       splitCSV(os.Getenv("CNV_SIGNATURE_WHITELIST")),
+		ChannelAllowed:         splitCSV(os.Getenv("CNV_CHANNEL_WHITELIST")),
+		RequireSignature:       boolOr("CNV_REQUIRE_SIGNATURE", false),
+		DevMode:                boolOr("CNV_DEV_MODE", false),
+		BootstrapEndpoint:      strings.TrimSpace(os.Getenv("CNV_BOOTSTRAP_ENDPOINT")),
+		BootstrapMaxThreads:    intOr("CNV_BOOTSTRAP_MAX_THREADS", 4),
+		BootstrapVersion:       intOr("CNV_BOOTSTRAP_VERSION", 0),
+		DBURL:                  os.Getenv("CNV_DB_URL"),
+		CapWorkerURL:           os.Getenv("CNV_CAP_WORKER_URL"),
+		ClientSessionTTL:       durOr("CNV_CLIENT_SESSION_TTL", 7*24*time.Hour),
+		AdminSessionTTL:        durOr("CNV_ADMIN_SESSION_TTL", 7*24*time.Hour),
+		AccountSessionTTL:      durOr("CNV_ACCOUNT_SESSION_TTL", 30*24*time.Hour),
+		ResourceTokenWindowSec: intOr("CNV_RESOURCE_TOKEN_WINDOW_SEC", resourceauth.DefaultWindowSec),
+		ClientTokenIssuer:      os.Getenv("CNV_CLIENT_TOKEN_ISSUER"),
+		ClientTokenSeed:        os.Getenv("CNV_CLIENT_TOKEN_SEED"),
+		ClientTokenTrusted:     splitKeyPairs(os.Getenv("CNV_CLIENT_TOKEN_TRUSTED_KEYS")),
+		PKIAnchors:             splitPaths(os.Getenv("CNV_PKI_ANCHORS")),
+		PKICertFile:            os.Getenv("CNV_PKI_CERT"),
+		PKIChainFiles:          splitPaths(os.Getenv("CNV_PKI_CHAIN")),
+		PKIKeyFile:             envOr("CNV_PKI_KEY", "./data/pki.key"),
+		NodeRole:               envOr("CNV_NODE_ROLE", "business"),
+		NodeID:                 envOr("CNV_NODE_ID", hostname()),
+		NodeKeyFile:            envOr("CNV_NODE_KEY_FILE", "./data/node.key"),
+		ControlAddr:            envOr("CNV_CONTROL_ADDR", "127.0.0.1:9090"),
+		DirectoryFile:          os.Getenv("CNV_DIRECTORY_FILE"),
+		PublicURL:              os.Getenv("CNV_PUBLIC_URL"),
+		PanelPublicURL:         strings.TrimRight(os.Getenv("CNV_PANEL_PUBLIC_URL"), "/"),
+		PanelDBFile:            envOr("CNV_PANEL_DB_FILE", "./data/panel.db"),
+		PanelKey:               os.Getenv("CNV_PANEL_KEY"),
+		SkipMigrate:            boolOr("CNV_SKIP_MIGRATE", false),
+		SMTPHost:               os.Getenv("CNV_SMTP_HOST"),
+		SMTPPort:               envOr("CNV_SMTP_PORT", "587"),
+		SMTPUser:               os.Getenv("CNV_SMTP_USER"),
+		SMTPPass:               os.Getenv("CNV_SMTP_PASS"),
+		SMTPFrom:               os.Getenv("CNV_SMTP_FROM"),
+		SMTPFromName:           envOr("CNV_SMTP_FROM_NAME", "魔法纪录复兴计划"),
 	}
 	if v := os.Getenv("CNV_RESOURCE_TOKEN_SECRET"); v != "" {
 		c.ResourceTokenSecret = []byte(v)
