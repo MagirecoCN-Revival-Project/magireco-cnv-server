@@ -66,8 +66,13 @@
 
 ## 🔴 铁律四：契约同步
 
-服务端接口以 **`magirecocn-architecture-protocol-document`**（架构协议文档仓库）
-为唯一真理。
+服务端接口以 **[契约登记表](https://docs.magireco.top/protocol/contract-register)**
+（`magireco-cnv-docs` 仓库 `protocol/contract-register.md`）为唯一真理。
+
+> 原文指向 `magirecocn-architecture-protocol-document`。**那个仓库不存在**——
+> 它要么从未建起来，要么在文档统一到 docs 站时被并了进来而没人改指针。铁律指向
+> 一个空地址比没有铁律更糟：它看起来有规矩，实际无法执行。2026-08 已把登记表
+> 落在 docs 仓库，与协议正文同仓库、同一次构建验证，不再有跨仓库指针。
 
 > 早期注释写着"字段名以 `magireco-cnv-client` 的 Java 源码为唯一真理"。
 > **该锚点已失效**——Android 客户端已弃维，不再有"照着实现"的对象。

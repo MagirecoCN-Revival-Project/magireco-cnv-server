@@ -26,6 +26,7 @@ import (
 
 	"magirecocn-revival/api-server/internal/clienttoken"
 	"magirecocn-revival/api-server/internal/resourceauth"
+	"magirecocn-revival/api-server/internal/scenemanifest"
 	"magirecocn-revival/api-server/internal/store"
 )
 
@@ -810,10 +811,9 @@ func TestInit_AssetAuthTokenIsVerifiable(t *testing.T) {
 // 空清单会被客户端理解为"该场景无需任何资产",从而静默进入残缺场景。
 func TestSceneManifest_UnavailableWhenNotWired(t *testing.T) {
 	h, _ := newTestHandler(t)
-	h.DevMode = true // 开着开发模式,才能测到"没接清单"而不是被生产守卫拦下
 	srv := newRouter(h)
 	triple := authTripleFor(t, h, srv, "dev_sm_off")
-	body := map[string]any{"scene_id": "quest_101101"}
+	body := map[string]any{"scene_id": "story/11011"}
 	for k, v := range triple {
 		body[k] = v
 	}
@@ -829,7 +829,7 @@ func TestSceneManifest_UnavailableWhenNotWired(t *testing.T) {
 func TestSceneManifest_RequiresSceneID(t *testing.T) {
 	h, _ := newTestHandler(t)
 	h.DevMode = true
-	h.SceneAssets = func(context.Context, string) ([]string, error) { return nil, nil }
+	h.SceneAssets = func(context.Context, string) ([]scenemanifest.Asset, error) { return nil, nil }
 	srv := newRouter(h)
 	triple := authTripleFor(t, h, srv, "dev_sm_noid")
 	code, out := postJSONRaw(t, srv, "/client/scene-manifest", triple)
@@ -844,10 +844,10 @@ func TestSceneManifest_RequiresSceneID(t *testing.T) {
 func TestSceneManifest_UnknownSceneIs404(t *testing.T) {
 	h, _ := newTestHandler(t)
 	h.DevMode = true
-	h.SceneAssets = func(context.Context, string) ([]string, error) { return nil, nil }
+	h.SceneAssets = func(context.Context, string) ([]scenemanifest.Asset, error) { return nil, nil }
 	srv := newRouter(h)
 	triple := authTripleFor(t, h, srv, "dev_sm_404")
-	body := map[string]any{"scene_id": "nope"}
+	body := map[string]any{"scene_id": "story/nope"}
 	for k, v := range triple {
 		body[k] = v
 	}
@@ -857,26 +857,32 @@ func TestSceneManifest_UnknownSceneIs404(t *testing.T) {
 	}
 }
 
-// 开发期最小形状:{scene_id, assets:[{path}]}。
-// R2 定稿后按扩展性规则**新增**字段(hash/size),本断言不应因此失败。
-func TestSceneManifest_MinimalShape(t *testing.T) {
+// R2 定稿形状:{scene_id, manifest_hash, assets:[{path, sha256, size}]}。
+func TestSceneManifest_FinalShape(t *testing.T) {
 	h, _ := newTestHandler(t)
-	h.DevMode = true // 最小形状是开发期临时值,生产守卫下不可用
-	h.SceneAssets = func(_ context.Context, id string) ([]string, error) {
-		if id != "quest_101101" {
+	h.SceneAssets = func(_ context.Context, id string) ([]scenemanifest.Asset, error) {
+		if id != "story/11011" {
 			return nil, nil
 		}
-		return []string{"resource/image_native/a.png", "resource/sound_native/b.hca"}, nil
+		// 刻意逆序返回:响应必须按 path 排序,顺序抖动会让客户端的重试与断点
+		// 续传行为不可复现。
+		return []scenemanifest.Asset{
+			{Path: "resource/sound_native/b.hca", SHA256: "bbb", Size: 200},
+			{Path: "resource/image_native/a.png", SHA256: "aaa", Size: 100},
+		}, nil
 	}
 	srv := newRouter(h)
 	triple := authTripleFor(t, h, srv, "dev_sm_ok")
-	body := map[string]any{"scene_id": "quest_101101"}
+	body := map[string]any{"scene_id": "story/11011"}
 	for k, v := range triple {
 		body[k] = v
 	}
 	resp := postJSON(t, srv, "/client/scene-manifest", body)
-	if resp["scene_id"] != "quest_101101" {
+	if resp["scene_id"] != "story/11011" {
 		t.Errorf("scene_id = %v", resp["scene_id"])
+	}
+	if hash, _ := resp["manifest_hash"].(string); hash == "" {
+		t.Error("缺少 manifest_hash")
 	}
 	assets, ok := resp["assets"].([]any)
 	if !ok || len(assets) != 2 {
@@ -884,38 +890,95 @@ func TestSceneManifest_MinimalShape(t *testing.T) {
 	}
 	first, _ := assets[0].(map[string]any)
 	if first["path"] != "resource/image_native/a.png" {
-		t.Errorf("assets[0].path = %v", first["path"])
+		t.Errorf("assets 未按 path 排序: assets[0].path = %v", first["path"])
+	}
+	// 三个字段缺一不可:sha256 兼作缓存失效判据与完整性校验,size 用于调度。
+	if first["sha256"] != "aaa" {
+		t.Errorf("assets[0].sha256 = %v", first["sha256"])
+	}
+	if size, _ := first["size"].(float64); size != 100 {
+		t.Errorf("assets[0].size = %v", first["size"])
 	}
 }
 
-// TestSceneManifest_ProductionGuard —— 清单的最小形状是**开发期临时值**,
-// 生产环境(DevMode=false)一律拒绝,**哪怕 SceneAssets 已经接好**。
-//
-// 这条守卫的价值在于:临时值的危险不是它们存在,而是它们可能不被发现地留在生产里。
-// 一个只含 path 的清单在生产里跑得好好的,直到某天需要靠 hash 做缓存失效,
-// 才发现它从来没有过。
-func TestSceneManifest_ProductionGuard(t *testing.T) {
+// scene_id 的命名空间格式必须在服务端校验——当前只用它查表,但契约要在它还不
+// 危险的时候就把闸设上。
+func TestSceneManifest_MalformedSceneID(t *testing.T) {
 	h, _ := newTestHandler(t)
-	// 注意:不设 DevMode(默认 false = 生产),但把清单接好。
-	h.SceneAssets = func(context.Context, string) ([]string, error) {
-		return []string{"resource/image_native/a.png"}, nil
-	}
+	h.SceneAssets = func(context.Context, string) ([]scenemanifest.Asset, error) { return nil, nil }
 	srv := newRouter(h)
-	triple := authTripleFor(t, h, srv, "dev_sm_guard")
-	body := map[string]any{"scene_id": "quest_101101"}
+	triple := authTripleFor(t, h, srv, "dev_sm_bad")
+	for _, id := range []string{"quest_101101", "story/..", "Story/x", "story/a/b"} {
+		body := map[string]any{"scene_id": id}
+		for k, v := range triple {
+			body[k] = v
+		}
+		code, out := postJSONRaw(t, srv, "/client/scene-manifest", body)
+		if code != http.StatusBadRequest || out["error"] != "malformed_scene_id" {
+			t.Errorf("scene_id=%q 应当 400 malformed_scene_id,得到 %d %v", id, code, out["error"])
+		}
+	}
+}
+
+// known_manifest_hash 命中时省掉整张清单,且 assets 必须**省略**而不是空数组——
+// 空数组的语义是"该场景不需要任何资产",与"你手里那份还有效"完全不同。
+func TestSceneManifest_UnchangedOmitsAssets(t *testing.T) {
+	h, _ := newTestHandler(t)
+	assets := []scenemanifest.Asset{{Path: "resource/a.png", SHA256: "aaa", Size: 100}}
+	h.SceneAssets = func(context.Context, string) ([]scenemanifest.Asset, error) { return assets, nil }
+	srv := newRouter(h)
+	triple := authTripleFor(t, h, srv, "dev_sm_inc")
+
+	body := map[string]any{"scene_id": "story/11011"}
 	for k, v := range triple {
 		body[k] = v
 	}
-	code, out := postJSONRaw(t, srv, "/client/scene-manifest", body)
-	if code != http.StatusServiceUnavailable {
-		t.Fatalf("生产模式下应当 503,实际 %d: %v", code, out)
+	first := postJSON(t, srv, "/client/scene-manifest", body)
+	hash, _ := first["manifest_hash"].(string)
+	if hash == "" {
+		t.Fatal("首次请求应当带 manifest_hash")
 	}
-	if out["error"] != "manifest_unavailable" {
-		t.Errorf("error = %v, want manifest_unavailable", out["error"])
+
+	body["known_manifest_hash"] = hash
+	again := postJSON(t, srv, "/client/scene-manifest", body)
+	if again["unchanged"] != true {
+		t.Errorf("命中时应当 unchanged=true, got %v", again["unchanged"])
 	}
-	// 不能因为拒绝就顺手回一个空清单——那正是守卫要防的静默降级。
-	if _, has := out["assets"]; has {
-		t.Errorf("被守卫拦下时不应返回 assets 字段, got %v", out["assets"])
+	if _, has := again["assets"]; has {
+		t.Error("unchanged 时 assets 必须省略,不得发空数组")
+	}
+
+	// 哈希对不上就照常下发全量
+	body["known_manifest_hash"] = "stale"
+	full := postJSON(t, srv, "/client/scene-manifest", body)
+	if _, has := full["assets"]; !has {
+		t.Error("哈希不匹配时应当下发完整清单")
+	}
+	if full["unchanged"] == true {
+		t.Error("哈希不匹配时不得标 unchanged")
+	}
+}
+
+// R2 定稿后生产守卫撤除:DevMode=false(生产)时清单照常可用。
+//
+// 守卫当初挡的是**开发期临时值**(只含 path 的最小形状)——临时值的危险不在于
+// 它们存在,而在于可能不被发现地留在生产里。形状定稿后守卫就该拆:留着不撤等于
+// 永久禁用一个已经定稿的功能,而且没人知道为什么。
+func TestSceneManifest_NoLongerGuardedAfterR2(t *testing.T) {
+	h, _ := newTestHandler(t)
+	// 不设 DevMode = 生产模式
+	h.SceneAssets = func(context.Context, string) ([]scenemanifest.Asset, error) {
+		return []scenemanifest.Asset{{Path: "resource/a.png", SHA256: "aaa", Size: 100}}, nil
+	}
+	srv := newRouter(h)
+	triple := authTripleFor(t, h, srv, "dev_sm_guard")
+	body := map[string]any{"scene_id": "story/11011"}
+	for k, v := range triple {
+		body[k] = v
+	}
+	resp := postJSON(t, srv, "/client/scene-manifest", body)
+	if _, has := resp["assets"]; !has {
+		t.Errorf("定稿后生产模式应当正常下发清单,得到 %v", resp)
 	}
 }
 

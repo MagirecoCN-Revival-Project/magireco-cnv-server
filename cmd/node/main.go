@@ -323,9 +323,12 @@ func runBusiness(ctx context.Context, cfg *config.Config, dirJSON json.RawMessag
 		AutoBan:             autoBan,
 		DirectoryJSON:       dirJSON,
 		DevMode:             cfg.DevMode,
-		// SceneAssets 尚未接入构建管线：场景清单的正式形状是待决项 R2。
+		// SceneAssets 尚未接入构建管线。形状已随 R2 定稿(path + sha256 + size),
+		// 但"清单从哪来"仍压在 R5(master data 来源与版本化)后面。
+		//
 		// nil = 该功能未启用，/client/scene-manifest 明确返回 503 而非空清单——
-		// 空清单会被客户端理解为"该场景无需任何资产",从而静默进入残缺场景。
+		// 空清单会被客户端理解为"该场景无需任何资产",从而静默进入残缺场景,
+		// 把错误推迟到最难排查的地方才暴露。
 		SceneAssets:         nil,
 		BootstrapEndpoint:   cfg.BootstrapEndpoint,
 		BootstrapMaxThreads: cfg.BootstrapMaxThreads,

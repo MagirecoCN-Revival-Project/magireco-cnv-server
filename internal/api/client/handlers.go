@@ -40,6 +40,7 @@ import (
 	"magirecocn-revival/api-server/internal/clienttoken"
 	"magirecocn-revival/api-server/internal/middleware"
 	"magirecocn-revival/api-server/internal/resourceauth"
+	"magirecocn-revival/api-server/internal/scenemanifest"
 	"magirecocn-revival/api-server/internal/store"
 	"magirecocn-revival/api-server/internal/totentanz"
 )
@@ -89,13 +90,16 @@ type Handler struct {
 	// BootstrapVersion 当前底包版本号(r128 → 128),客户端据此自行判断是否提示更新。
 	BootstrapVersion int
 
-	// SceneAssets 返回进入某场景所需的资产相对路径列表。
+	// SceneAssets 返回进入某场景所需的资产清单(路径 + 内容哈希 + 大小)。
 	// 返回 nil 表示未知场景（客户端得到 404）。nil 函数 = 场景清单功能未启用。
-	SceneAssets func(ctx context.Context, sceneID string) ([]string, error)
+	SceneAssets func(ctx context.Context, sceneID string) ([]scenemanifest.Asset, error)
 
-	// DevMode 开发模式。协议里的**开发期临时值**只在它为 true 时才允许下发,
-	// 这是协议文档 06-dev-mode「生产守卫」在服务端侧的落点。
-	// 当前受它管辖的只有场景清单的最小形状(见 sceneManifest)。
+	// DevMode 开发模式。协议里的**开发期临时值**(📝 草案形状)只在它为 true 时
+	// 才允许下发,这是「生产守卫」在服务端侧的落点。
+	//
+	// **当前没有任何端点受它管辖。** 原先管辖场景清单的最小形状,R2 定稿后守卫
+	// 随之撤除——守卫留着不撤等于永久禁用一个已经定稿的功能,而且没人知道为什么。
+	// 开关本身保留:下一个草案形状还要用它。
 	DevMode bool
 }
 
@@ -572,19 +576,17 @@ func (h *Handler) heartbeat(w http.ResponseWriter, r *http.Request) {
 type sceneManifestReq struct {
 	authTripleBody
 	SceneID string `json:"scene_id"`
+	// KnownManifestHash 客户端手里那份清单的哈希。命中则服务端省掉整张清单。
+	KnownManifestHash string `json:"known_manifest_hash"`
 }
 
-// sceneManifest 返回进入某场景所需的资产清单。
+// sceneManifest 返回进入某场景所需的资产清单(契约登记表 R2,2026-08 定稿)。
 //
-// 场景包是**清单与调度单位**，文件是**传输与缓存单位**：客户端拿到清单后与本地
-// 缓存做差集，只拉缺失的文件。边缘节点因此保持为纯对象存储，不理解游戏结构。
+// 场景包是**清单与调度单位**,文件是**传输与缓存单位**:客户端拿到清单后与本地
+// 缓存做差集,只拉缺失的文件。边缘节点因此保持为纯对象存储,不理解游戏结构。
 //
-// 当前为协议文档 06-dev-mode 规定的**开发期最小形状**，只含 path。
-// 清单的正式形状（hash / size / 增量 / 场景 ID 命名空间）仍是待决项 R2；
-// 定稿后按扩展性规则**新增字段**即可，客户端忽略未知字段，不破坏既有实现。
-//
-// ⚠️ 因为最小形状是**开发期临时值**，本端点受「生产守卫」管辖：DevMode=false
-// 时一律拒绝，哪怕 SceneAssets 已经接好。见下方注释。
+// 清单每项给 path + sha256 + size,**不给 URL**——线路由签名节点目录在取用那一刻
+// 决定,把 URL 钉进一份会被缓存很久的清单等于把多节点、故障转移、就近接入全废掉。
 func (h *Handler) sceneManifest(w http.ResponseWriter, r *http.Request) {
 	var req sceneManifestReq
 	if !respond.ReadJSONAllowUnknown(w, r, &req) {
@@ -594,22 +596,17 @@ func (h *Handler) sceneManifest(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, http.StatusBadRequest, "missing_scene_id", "缺少 scene_id")
 		return
 	}
-	// ── 生产守卫（协议文档 06-dev-mode）─────────────────────────────────
-	// 清单的最小形状（只含 path）是 R2 定稿前的**开发期临时值**，生产环境
-	// **不得下发**。这里在 SceneAssets 判空之前拦，是为了让"生产环境不该有这个
-	// 端点"这件事与"清单还没接进来"区分开——两者的修法完全不同。
-	//
-	// 临时值的危险不在于它们存在，而在于**它们可能不被发现地留在生产里**：
-	// 一个只含 path 的清单在生产里跑得好好的，直到某天需要靠 hash 做缓存失效
-	// 才发现它从来没有过。守卫必须先于临时值生效。
-	if !h.DevMode {
-		respond.Fail(w, http.StatusServiceUnavailable, "manifest_unavailable",
-			"场景清单当前仅在开发模式下可用（清单格式待定，见 R2）")
+	// 格式闸。当前 scene_id 只用于查表、不拼进文件路径,所以畸形值还不危险——
+	// 但一旦有人改成按约定拼路径(很自然的优化),没有这道校验就是现成的穿越入口。
+	if err := scenemanifest.ValidateSceneID(req.SceneID); err != nil {
+		respond.Fail(w, http.StatusBadRequest, "malformed_scene_id",
+			"scene_id 须形如 <namespace>/<id>")
 		return
 	}
 	if h.SceneAssets == nil {
-		// 场景清单尚未接入构建管线（待决项 R2）。明确报错，不返回空清单——
-		// 空清单会被客户端理解为"该场景无需任何资产"，从而静默进入残缺场景。
+		// 场景清单尚未接入构建管线。明确报错,不返回空清单——空清单会被客户端
+		// 理解为"该场景无需任何资产",从而静默进入残缺场景,把错误推迟到最难
+		// 排查的地方才暴露。
 		respond.Fail(w, http.StatusServiceUnavailable, "manifest_unavailable",
 			"场景清单服务尚未启用")
 		return
@@ -623,14 +620,31 @@ func (h *Handler) sceneManifest(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, http.StatusNotFound, "scene_not_found", "未知的 scene_id")
 		return
 	}
-	list := make([]map[string]any, 0, len(assets))
-	for _, p := range assets {
-		list = append(list, map[string]any{"path": p})
+
+	hash := scenemanifest.Hash(assets)
+
+	// 增量:服务端**不跟踪客户端有什么**,只回答"这张清单还是不是你手里那张"。
+	// 差集完全在客户端做(它本来就有本地缓存索引)——状态留在最靠近它的一侧,
+	// 与"边缘节点不理解游戏结构"是同一条原则。
+	if req.KnownManifestHash != "" && req.KnownManifestHash == hash {
+		// assets **省略**而不是发空数组:空数组的语义是"该场景不需要任何资产",
+		// 与"你手里那份还有效"完全不同,不能共用一种表示。
+		respond.OKRaw(w, map[string]any{
+			"success":       true,
+			"scene_id":      req.SceneID,
+			"manifest_hash": hash,
+			"unchanged":     true,
+		})
+		return
 	}
+
 	respond.OKRaw(w, map[string]any{
-		"success":  true,
-		"scene_id": req.SceneID,
-		"assets":   list,
+		"success":       true,
+		"scene_id":      req.SceneID,
+		"manifest_hash": hash,
+		// 顺序稳定:客户端可能按顺序调度下载,顺序抖动会让重试与断点续传的行为
+		// 变得不可复现。
+		"assets": scenemanifest.Sorted(assets),
 	})
 }
 
