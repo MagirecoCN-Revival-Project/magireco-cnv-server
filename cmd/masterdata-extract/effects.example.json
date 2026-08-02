@@ -1,0 +1,197 @@
+{
+  "AcceleMPUP": {
+    "code": "BUFF"
+  },
+  "Accele伤害UP": {
+    "code": "BUFF"
+  },
+  "BlastMPUP": {
+    "code": "BUFF"
+  },
+  "Blast伤害DOWN": {
+    "code": "DEBUFF"
+  },
+  "Blast伤害UP": {
+    "code": "BUFF"
+  },
+  "ChargeMPUP": {
+    "code": "BUFF"
+  },
+  "Charge伤害UP": {
+    "code": "BUFF"
+  },
+  "Charge后伤害UP": {
+    "code": "BUFF"
+  },
+  "HP回复": {
+    "code": "HEAL"
+  },
+  "HP回复(比例)": {
+    "code": "HEAL"
+  },
+  "MPUP": {
+    "code": "BUFF"
+  },
+  "MP回复": {
+    "code": "HEAL"
+  },
+  "MP获得量DOWN": {
+    "code": "DEBUFF"
+  },
+  "MP获得量UP": {
+    "code": "BUFF"
+  },
+  "Magia伤害DOWN": {
+    "code": "DEBUFF"
+  },
+  "Magia伤害UP": {
+    "code": "BUFF"
+  },
+  "Magia伤害耐性UP": {
+    "code": "BUFF"
+  },
+  "不屈": {
+    "code": "CONDITION_GOOD"
+  },
+  "伤害": {
+    "code": "ATTACK"
+  },
+  "伤害上升": {
+    "code": "BUFF"
+  },
+  "伤害削减": {
+    "code": "BUFF"
+  },
+  "再生": {
+    "code": "BUFF"
+  },
+  "加护": {
+    "code": "BUFF"
+  },
+  "反击": {
+    "code": "BUFF"
+  },
+  "受到伤害DOWN": {
+    "code": "BUFF"
+  },
+  "受到伤害UP": {
+    "code": "DEBUFF"
+  },
+  "回避": {
+    "code": "BUFF"
+  },
+  "复活": {
+    "code": "RESURRECT"
+  },
+  "封印": {
+    "code": "CONDITION_BAD"
+  },
+  "属性强化伤害": {
+    "code": "ATTACK"
+  },
+  "幸运": {
+    "code": "CONDITION_GOOD"
+  },
+  "异常状态耐性DOWN": {
+    "code": "DEBUFF"
+  },
+  "异常状态耐性UP": {
+    "code": "BUFF"
+  },
+  "忍耐": {
+    "code": "CONDITION_GOOD"
+  },
+  "恐惧": {
+    "code": "CONDITION_BAD"
+  },
+  "挑衅": {
+    "code": "CONDITION_GOOD"
+  },
+  "攻击力DOWN": {
+    "code": "DEBUFF"
+  },
+  "攻击力UP": {
+    "code": "BUFF"
+  },
+  "敌方全体伤害": {
+    "code": "ATTACK"
+  },
+  "敌方全体属性强化伤害": {
+    "code": "ATTACK"
+  },
+  "敌方单体伤害": {
+    "code": "ATTACK"
+  },
+  "敌方单体属性强化伤害": {
+    "code": "ATTACK"
+  },
+  "无敌": {
+    "code": "CONDITION_GOOD"
+  },
+  "无视防御伤害": {
+    "code": "ATTACK"
+  },
+  "暴击": {
+    "code": "BUFF"
+  },
+  "暴击率DOWN": {
+    "code": "DEBUFF"
+  },
+  "暴击率UP": {
+    "code": "BUFF"
+  },
+  "束缚": {
+    "code": "CONDITION_BAD"
+  },
+  "毒": {
+    "code": "CONDITION_BAD"
+  },
+  "混乱": {
+    "code": "CONDITION_BAD"
+  },
+  "烧伤": {
+    "code": "CONDITION_BAD"
+  },
+  "状态异常无效": {
+    "code": "BUFF"
+  },
+  "状态解除": {
+    "code": "REVOKE"
+  },
+  "眩晕": {
+    "code": "CONDITION_BAD"
+  },
+  "自动回复": {
+    "code": "HEAL"
+  },
+  "解除弱化": {
+    "code": "REVOKE"
+  },
+  "解除强化": {
+    "code": "REVOKE"
+  },
+  "诅咒": {
+    "code": "CONDITION_BAD"
+  },
+  "造成伤害DOWN": {
+    "code": "DEBUFF"
+  },
+  "造成伤害UP": {
+    "code": "BUFF"
+  },
+  "防御力DOWN": {
+    "code": "DEBUFF"
+  },
+  "防御力UP": {
+    "code": "BUFF"
+  },
+  "集中": {
+    "code": "CONDITION_GOOD"
+  },
+  "魅惑": {
+    "code": "CONDITION_BAD"
+  },
+  "黑暗": {
+    "code": "CONDITION_BAD"
+  }
+}
