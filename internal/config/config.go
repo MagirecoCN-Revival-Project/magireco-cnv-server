@@ -51,6 +51,13 @@ type Config struct {
 	// 内容格式见 internal/scenemanifest.File。
 	SceneManifestFile string
 
+	// MasterDataFile 战斗数值 master data 文件路径(CNV_MASTER_DATA_FILE)。
+	// 空 = 未启用,依赖它的功能(战斗定义生成、结算裁定)一律不可用。
+	//
+	// 与场景清单同款做法:构建管线的产物,随部署挂载,不入版本库(铁律三)。
+	// 内容格式见 internal/masterdata.File。
+	MasterDataFile string
+
 	// BootstrapEndpoint 下发给 Android 底包的业务服务器地址
 	// (CNV_BOOTSTRAP_ENDPOINT)。空 = 本节点不接管 Android 底包,
 	// /magica/api/snaa 返回 503。源码不得硬编码(铁律二)。
@@ -172,6 +179,7 @@ func LoadFromEnv() (*Config, error) {
 		RequireSignature:       boolOr("CNV_REQUIRE_SIGNATURE", false),
 		DevMode:                boolOr("CNV_DEV_MODE", false),
 		SceneManifestFile:      strings.TrimSpace(os.Getenv("CNV_SCENE_MANIFEST_FILE")),
+		MasterDataFile:         strings.TrimSpace(os.Getenv("CNV_MASTER_DATA_FILE")),
 		BootstrapEndpoint:      strings.TrimSpace(os.Getenv("CNV_BOOTSTRAP_ENDPOINT")),
 		BootstrapMaxThreads:    intOr("CNV_BOOTSTRAP_MAX_THREADS", 4),
 		BootstrapVersion:       intOr("CNV_BOOTSTRAP_VERSION", 0),

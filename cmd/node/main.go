@@ -45,6 +45,7 @@ import (
 	"magirecocn-revival/api-server/internal/control"
 	"magirecocn-revival/api-server/internal/directory"
 	"magirecocn-revival/api-server/internal/email"
+	"magirecocn-revival/api-server/internal/masterdata"
 	"magirecocn-revival/api-server/internal/middleware"
 	"magirecocn-revival/api-server/internal/pki"
 	"magirecocn-revival/api-server/internal/scenemanifest"
@@ -308,6 +309,27 @@ func runBusiness(ctx context.Context, cfg *config.Config, dirJSON json.RawMessag
 		log.Error("客户端会话令牌初始化失败", "err", err)
 		os.Exit(2)
 	}
+
+	// 战斗数值 master data(契约登记表 R5b)。同样是构建管线的产物,随部署挂载。
+	//
+	// 加载失败拒绝启动,理由与场景清单相同,而且更要紧:master data 的错误症状
+	// 离原因极远——一个读反了的数值区间表现为"某个角色越练越弱",一个拼错的 code
+	// 表现为"某个技能什么都不做",两者都会被当成平衡性问题反馈,没人会想到是
+	// 数据提取出了错。全量校验在 Load 里一次做完。
+	var master *masterdata.Set
+	if cfg.MasterDataFile != "" {
+		md, mdErr := masterdata.Load(cfg.MasterDataFile)
+		if mdErr != nil {
+			log.Error("加载战斗数值 master data 失败", "file", cfg.MasterDataFile, "err", mdErr)
+			os.Exit(2)
+		}
+		master = md
+		charas, memoria := md.Counts()
+		log.Info("战斗数值 master data 已加载",
+			"file", cfg.MasterDataFile, "version", md.Version(),
+			"charas", charas, "memoria", memoria)
+	}
+	_ = master // 消费方(战斗定义生成 / R4 结算裁定)尚未接入
 
 	// 场景资产清单(契约登记表 R5a)。清单是构建管线的产物,随部署挂载,不入版本库。
 	//
