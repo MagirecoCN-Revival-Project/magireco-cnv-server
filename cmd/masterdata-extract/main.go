@@ -30,6 +30,7 @@ package main
 
 import (
 	"compress/gzip"
+	"encoding/csv"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -51,6 +52,7 @@ func main() {
 		outPath   = flag.String("out", "", "输出路径,留空写 stdout")
 		version   = flag.String("version", "", "写进产物的版本标识(建议用构建日期)")
 		reportGap = flag.Bool("report-gaps", false, "只报告未映射的效果名,不产出数据")
+		gapsCSV   = flag.String("gaps-csv", "", "把缺口清单写成 CSV(供交给领域研究人员填写)")
 	)
 	flag.Parse()
 
@@ -58,7 +60,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "必须提供 -templates 与 -effects;用 -h 看全部参数")
 		os.Exit(2)
 	}
-	if err := run(*tmplPath, *charaPath, *memoPath, *effPath, *outPath, *version, *reportGap); err != nil {
+	if err := run(*tmplPath, *charaPath, *memoPath, *effPath, *outPath, *version, *reportGap, *gapsCSV); err != nil {
 		fmt.Fprintln(os.Stderr, "提取失败:", err)
 		os.Exit(1)
 	}
@@ -105,7 +107,7 @@ var attributes = map[string]string{
 	"光": "LIGHT", "暗": "DARK", "无": "VOID",
 }
 
-func run(tmplPath, charaPath, memoPath, effPath, outPath, version string, reportGap bool) error {
+func run(tmplPath, charaPath, memoPath, effPath, outPath, version string, reportGap bool, gapsCSV string) error {
 	rawEffects := effectMap{}
 	if err := readJSON(effPath, &rawEffects); err != nil {
 		return fmt.Errorf("读取效果映射表: %w", err)
@@ -143,7 +145,7 @@ func run(tmplPath, charaPath, memoPath, effPath, outPath, version string, report
 		}
 	}
 
-	gaps := map[string]int{}
+	gaps := gapSet{}
 	charas, err := extractCharas(tmplPath, nameToID, effects, gaps)
 	if err != nil {
 		return err
@@ -158,6 +160,12 @@ func run(tmplPath, charaPath, memoPath, effPath, outPath, version string, report
 
 	if len(gaps) > 0 {
 		reportGaps(gaps)
+		if gapsCSV != "" {
+			if err := writeGapsCSV(gaps, gapsCSV); err != nil {
+				return fmt.Errorf("写出缺口 CSV: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "缺口清单已写出: %s\n", gapsCSV)
+		}
 		if !reportGap {
 			return fmt.Errorf("有 %d 个效果名未映射;补全 -effects 表后重跑,或用 -report-gaps 只看清单", len(gaps))
 		}
@@ -180,7 +188,7 @@ func run(tmplPath, charaPath, memoPath, effPath, outPath, version string, report
 	return os.WriteFile(outPath, blob, 0o644)
 }
 
-func extractCharas(path string, nameToID map[string]int, effects effectMap, gaps map[string]int) ([]masterdata.Chara, error) {
+func extractCharas(path string, nameToID map[string]int, effects effectMap, gaps gapSet) ([]masterdata.Chara, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -272,7 +280,7 @@ func extractCharas(path string, nameToID map[string]int, effects effectMap, gaps
 	return out, nil
 }
 
-func extractMemoria(path string, effects effectMap, gaps map[string]int) ([]masterdata.Memoria, error) {
+func extractMemoria(path string, effects effectMap, gaps gapSet) ([]masterdata.Memoria, error) {
 	var raw map[string]struct {
 		Number      json.Number `json:"number"`
 		NameZh      string      `json:"name_zh"`
@@ -321,7 +329,7 @@ func extractMemoria(path string, effects effectMap, gaps map[string]int) ([]mast
 // parseArts 把一行中文效果描述拆成结构化的 Art 列表。
 //
 // 未映射的效果名记进 gaps 并**跳过该条**——最终由调用方决定是报错还是只报告。
-func parseArts(detail string, effects effectMap, gaps map[string]int) []masterdata.Art {
+func parseArts(detail string, effects effectMap, gaps gapSet) []masterdata.Art {
 	detail = strings.TrimSpace(detail)
 	if detail == "" {
 		return nil
@@ -339,7 +347,7 @@ func parseArts(detail string, effects effectMap, gaps map[string]int) []masterda
 			name := strings.TrimSpace(m[2])
 			mapped, ok := effects[normalizeName(name)]
 			if !ok {
-				gaps[name]++
+				gaps.record(name, chunk)
 				continue
 			}
 			out = append(out, masterdata.Art{
@@ -356,26 +364,84 @@ func parseArts(detail string, effects effectMap, gaps map[string]int) []masterda
 	return out
 }
 
-func reportGaps(gaps map[string]int) {
-	type kv struct {
-		name string
-		n    int
+// gapSet 记录未映射的效果名及其出现频次与一条真实例句。
+//
+// 例句是给填表的人看的:光有"魅惑"这个名字判断不出它该映射到哪个 code,
+// 但看到"（全体）魅惑，发动率：40%，持续回合：1"就清楚多了——带发动率与持续回合,
+// 说明是状态类而不是伤害类。
+type gapSet map[string]*gapInfo
+
+type gapInfo struct {
+	Count  int
+	Sample string
+}
+
+func (g gapSet) record(name, context string) {
+	e := g[name]
+	if e == nil {
+		e = &gapInfo{}
+		g[name] = e
 	}
-	list := make([]kv, 0, len(gaps))
-	for k, v := range gaps {
-		list = append(list, kv{k, v})
+	e.Count++
+	// 只留第一条例句。多留几条对判断没有额外帮助,却会让清单难读。
+	if e.Sample == "" {
+		e.Sample = strings.TrimSpace(context)
 	}
-	// 按频次降序:补映射表时先补高频的那些,收益最大。
+}
+
+type gapRow struct {
+	Name   string
+	Count  int
+	Sample string
+}
+
+// sorted 按频次降序返回;同频次按名字排序,让两次运行的输出可以直接 diff。
+func (g gapSet) sorted() []gapRow {
+	list := make([]gapRow, 0, len(g))
+	for k, v := range g {
+		list = append(list, gapRow{Name: k, Count: v.Count, Sample: v.Sample})
+	}
 	sort.Slice(list, func(i, j int) bool {
-		if list[i].n != list[j].n {
-			return list[i].n > list[j].n
+		if list[i].Count != list[j].Count {
+			return list[i].Count > list[j].Count
 		}
-		return list[i].name < list[j].name
+		return list[i].Name < list[j].Name
 	})
+	return list
+}
+
+func reportGaps(g gapSet) {
+	list := g.sorted()
 	fmt.Fprintf(os.Stderr, "未映射的效果名(%d 个,按出现频次降序):\n", len(list))
 	for _, e := range list {
-		fmt.Fprintf(os.Stderr, "  %5d  %s\n", e.n, e.name)
+		fmt.Fprintf(os.Stderr, "  %5d  %s\n", e.Count, e.Name)
 	}
+}
+
+// writeGapsCSV 把缺口清单写成 CSV,供交给领域研究人员填写。
+//
+// 带 UTF-8 BOM:没有它,Excel 打开中文 CSV 是乱码——而这份文件的读者恰恰是用
+// Excel 打开它的人。
+func writeGapsCSV(g gapSet, path string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.WriteString("\ufeff"); err != nil {
+		return err
+	}
+	w := csv.NewWriter(f)
+	defer w.Flush()
+	if err := w.Write([]string{"效果名", "出现频次", "例句", "code", "sub", "备注"}); err != nil {
+		return err
+	}
+	for _, e := range g.sorted() {
+		if err := w.Write([]string{e.Name, strconv.Itoa(e.Count), e.Sample, "", "", ""}); err != nil {
+			return err
+		}
+	}
+	return w.Error()
 }
 
 // ── 小工具 ──────────────────────────────────────────────────────────────

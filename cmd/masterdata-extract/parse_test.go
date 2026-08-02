@@ -28,7 +28,7 @@ func TestParseParams(t *testing.T) {
 }
 
 func TestParseArts(t *testing.T) {
-	gaps := map[string]int{}
+	gaps := gapSet{}
 	arts := parseArts("（全体）属性强化伤害，效果值：305%，成长：10%", testEffects, gaps)
 	if len(arts) != 1 {
 		t.Fatalf("应当解出 1 条,得到 %+v", arts)
@@ -43,7 +43,7 @@ func TestParseArts(t *testing.T) {
 }
 
 func TestParseArts_MultipleSeparatedByBr(t *testing.T) {
-	gaps := map[string]int{}
+	gaps := gapSet{}
 	arts := parseArts(
 		"（全体）属性强化伤害，效果值：335%，成长：10%<br>（全体）魅惑，发动率：50%，持续回合：1",
 		testEffects, gaps)
@@ -62,7 +62,7 @@ func TestParseArts_MultipleSeparatedByBr(t *testing.T) {
 // 空格差异是 Wiki 的转录噪声,不该让映射表为它多存一条。
 func TestParseArts_NormalizesSpacing(t *testing.T) {
 	eff := effectMap{"AcceleMPUP": {Code: "BUFF"}}
-	gaps := map[string]int{}
+	gaps := gapSet{}
 	if arts := parseArts("（自身）Accele MPUP，效果值：20%", eff, gaps); len(arts) != 1 {
 		t.Errorf("带空格的写法应当命中同一条映射,gaps=%v", gaps)
 	}
@@ -71,13 +71,18 @@ func TestParseArts_NormalizesSpacing(t *testing.T) {
 // 未映射的效果名必须进 gaps 并跳过——静默放过会产出一份看起来正常、
 // 实则缺了效果的 master data。
 func TestParseArts_RecordsGaps(t *testing.T) {
-	gaps := map[string]int{}
+	gaps := gapSet{}
 	arts := parseArts("（全体）某个没见过的效果，效果值：100%", testEffects, gaps)
 	if len(arts) != 0 {
 		t.Errorf("未映射的效果不得产出: %+v", arts)
 	}
-	if gaps["某个没见过的效果"] != 1 {
-		t.Errorf("应当记进 gaps: %v", gaps)
+	e := gaps["某个没见过的效果"]
+	if e == nil || e.Count != 1 {
+		t.Fatalf("应当记进 gaps: %+v", e)
+	}
+	// 例句要一并留下——光有名字判断不出该映射到哪个 code。
+	if e.Sample == "" {
+		t.Error("缺口应当带一条真实例句")
 	}
 }
 
